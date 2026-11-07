@@ -38,7 +38,7 @@ async function launch(): Promise<Page> {
   const page = await app.firstWindow()
   await page.emulateMedia({ reducedMotion: 'reduce' })
   page.on('pageerror', (error) => rendererErrors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   return page
 }
 
@@ -107,7 +107,7 @@ try {
   const dark = THEME_PRESETS.find((theme) => theme.appearance === 'dark')!
   const light = THEME_PRESETS.find((theme) => theme.appearance === 'light')!
   await chooseTheme(page, dark)
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await page.evaluate(() => {
     const probe: ThemeProbe = { output: '', sessionIds: [], statuses: [], terminal: null }
     ;(window as unknown as { themeProbe: ThemeProbe }).themeProbe = probe

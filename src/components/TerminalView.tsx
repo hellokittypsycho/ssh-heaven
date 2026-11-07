@@ -313,8 +313,11 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
       fitRef.current?.fit()
       const focused = document.activeElement
       const editing = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable)
+      const navigatingSessions = focused instanceof HTMLElement && focused.matches('[role="tab"][data-session-keyboard-focus="true"]')
       // Resizing or connecting must not pull focus from search, file paths, or dialogs.
-      if (active && !dialogIsOpen() && !editing && !wrapper.current?.contains(focused)) terminalRef.current?.focus()
+      // Keyboard session navigation keeps its roving tab focus; pointer-selected
+      // tabs continue to hand focus to their terminal for immediate typing.
+      if (active && !dialogIsOpen() && !editing && !navigatingSessions && !wrapper.current?.contains(focused)) terminalRef.current?.focus()
       if (connected && terminalRef.current) {
         const terminal = terminalRef.current
         void transport.resize(sessionId, terminal.cols, terminal.rows).catch(errorRef.current)

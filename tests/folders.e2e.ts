@@ -32,7 +32,7 @@ try {
   const page = await app.firstWindow()
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await page.getByLabel(/^Nickname/).fill('Folder fixture')
   await page.getByLabel('Hostname or IP address').fill(fixture.host)
   await page.getByLabel('SSH port').fill(String(fixture.port))

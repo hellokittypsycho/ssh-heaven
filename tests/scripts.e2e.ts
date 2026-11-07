@@ -33,7 +33,7 @@ async function launch() {
   app = await _electron.launch({ executablePath: executable || require('electron') as string, args: [...(executable ? [] : [root]), `--user-data-dir=${dataDirectory}`], env, timeout: 30_000 })
   page = await app.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Scripts', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open scripts', exact: true })).toBeVisible()
   await page.evaluate(() => {
     const target = window as unknown as { scriptsOutput: string }
     target.scriptsOutput = ''
@@ -51,7 +51,7 @@ async function submissions(): Promise<Submission[]> { return app!.evaluate(() =>
 async function setCode(content: string) {
   await editor().focus(); await page!.keyboard.press('Control+a'); await page!.keyboard.insertText(content)
 }
-async function openScripts() { await page!.getByRole('tab', { name: 'Scripts', exact: true }).click(); await expect(panel()).toBeVisible() }
+async function openScripts() { await page!.getByRole('button', { name: 'Open scripts', exact: true }).click(); await expect(panel()).toBeVisible() }
 async function connect(name: string) {
   await page!.locator('.sidebar').getByRole('button', { name: `Quick connect ${name}`, exact: true }).click()
   await expect(activePane()).toHaveAttribute('aria-label', `${name} session`)
@@ -100,7 +100,7 @@ try {
   assert.equal(saved.command, original)
 
   await panel().getByLabel('Script name', { exact: true }).fill('Unfinished script edit')
-  await page!.getByRole('tab', { name: 'Home', exact: true }).click()
+  await page!.getByRole('button', { name: 'Open home', exact: true }).click()
   await openScripts()
   await expect(panel().getByLabel('Script name', { exact: true })).toHaveValue('Unfinished script edit')
   await panel().getByRole('button', { name: 'New script', exact: true }).click()

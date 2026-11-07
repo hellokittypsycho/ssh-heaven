@@ -28,12 +28,15 @@ try {
   const executable = process.env.SSH_HEAVEN_EXECUTABLE
   app = await _electron.launch({ executablePath: executable || require('electron') as string, args: [...(executable ? [] : [root]), `--user-data-dir=${dataDirectory}`], env, timeout: 30_000 })
   const page = await app.firstWindow(); page.on('pageerror', (error) => errors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   await app.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0]
     window.unmaximize(); window.setBounds({ x: 120, y: 80, width: 1100, height: 760 }); window.show(); window.focus()
   })
-  for (const phase of ['titlebar', 'workspace-header', 'tabbar-gap']) {
+  const hasSessionStrip = await page.getByRole('tablist', { name: 'Connection sessions', exact: true }).count() > 0
+  const dragPhases = ['titlebar', 'workspace-header', ...(hasSessionStrip ? ['session-strip-gap'] : [])]
+  if (!hasSessionStrip) console.log('No SSH sessions exist; an absent session strip has no native drag area to exercise.')
+  for (const phase of dragPhases) {
     await app.evaluate(({ BrowserWindow }, name) => { BrowserWindow.getAllWindows()[0].setTitle(`SSH Heaven · Native drag QA · ${name}`) }, phase)
     const before: Bounds = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds())
     await writeFile(progress, JSON.stringify({ phase, before, instruction: `Use a real OS drag on the ${phase}. Keep controls untouched.` }, null, 2))
@@ -50,20 +53,21 @@ try {
   await expect(page.getByRole('dialog', { name: 'Appearance', exact: true })).toBeVisible({ timeout: 180_000 })
   await writeFile(progress, JSON.stringify({ phase: 'close-appearance', instruction: 'Close Appearance with Escape.' }, null, 2))
   await expect(page.getByRole('dialog', { name: 'Appearance', exact: true })).toHaveCount(0, { timeout: 180_000 })
-  await writeFile(progress, JSON.stringify({ phase: 'tab-control', instruction: 'Click the New connection tab.' }, null, 2))
-  await expect(page.getByRole('tab', { name: 'New connection', exact: true })).toHaveAttribute('aria-selected', 'true', { timeout: 180_000 })
+  await writeFile(progress, JSON.stringify({ phase: 'sidebar-control', instruction: 'Click New connection in the sidebar.' }, null, 2))
+  await expect(page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true })).toHaveAttribute('aria-current', 'page', { timeout: 180_000 })
+  for (const name of ['Open home', 'Open scripts', 'Open vault']) await expect(page.getByRole('button', { name, exact: true })).toBeVisible()
   const regions = await page.evaluate(() => ({
     titlebar: getComputedStyle(document.querySelector('.window-titlebar')!).getPropertyValue('-webkit-app-region'),
     header: getComputedStyle(document.querySelector('.topbar')!).getPropertyValue('-webkit-app-region'),
-    tabs: getComputedStyle(document.querySelector('.tabbar')!).getPropertyValue('-webkit-app-region'),
-    controls: [...document.querySelectorAll('.topbar button,.tabbar button')].map((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')),
+    tabs: document.querySelector('.ssh-session-strip') ? getComputedStyle(document.querySelector('.ssh-session-strip')!).getPropertyValue('-webkit-app-region') : null,
+    controls: [...document.querySelectorAll('.topbar button,[role="tablist"][aria-label="Connection sessions"] button')].map((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')),
   }))
-  assert.equal(regions.titlebar, 'drag'); assert.equal(regions.header, 'drag'); assert.equal(regions.tabs, 'drag')
+  assert.equal(regions.titlebar, 'drag'); assert.equal(regions.header, 'drag'); assert.equal(regions.tabs, hasSessionStrip ? 'drag' : null)
   assert.ok(regions.controls.every((value) => value === 'no-drag'))
   assert.deepEqual(errors, [])
   await page.screenshot({ path: path.join(results, 'window-drag-verified.png') })
   await writeFile(progress, JSON.stringify({ phase: 'complete', moves, regions }, null, 2))
-  console.log('Native window drag E2E passed: real titlebar/header/tabbar moves with unchanged size, Appearance and tab controls remain clickable, native caption controls preserved.')
+  console.log('Native window drag E2E passed: existing titlebar/header/session-strip drag regions move with unchanged size, Appearance and sidebar navigation remain clickable, native caption controls preserved.')
 } catch (error) {
   await writeFile(progress, JSON.stringify({ phase: 'failed', error: String(error), moves }, null, 2))
   throw error

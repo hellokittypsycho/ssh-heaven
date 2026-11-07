@@ -15,7 +15,7 @@ Development builds have no release URLs and make no update requests. Their Updat
 The manifest contains only a stable semantic version:
 
 ```json
-{ "version": "0.7.0" }
+{ "version": "0.8.0" }
 ```
 
 Configured builds check once shortly after startup and when the user chooses **Check for updates**. No host inventory, credentials, or personal settings are sent. Requests have an eight-second timeout, a 16 KiB size limit, and do not follow redirects. Download links are fixed in the application build, not accepted from the remote manifest.

@@ -1,0 +1,96 @@
+.tabbar.ssh-session-strip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 47px;
+  height: 47px;
+  min-height: 47px;
+  min-width: 0;
+  padding: 5px 16px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.ssh-session-strip .ssh-session-scroll {
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  height: 35px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.ssh-session-scroll::-webkit-scrollbar { display: none; }
+.ssh-session-strip .session-tab { display: flex; align-items: center; gap: 4px; flex: 0 0 clamp(170px, 15vw, 210px); width: clamp(170px, 15vw, 210px); min-width: 170px; max-width: 210px; height: 35px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-muted); }
+.ssh-session-strip .session-tab.active { border-color: var(--accent-border); background: var(--surface-active); color: var(--text); }
+.ssh-session-strip .session-tab:hover:not(.active) { background: var(--surface-hover); color: var(--text-secondary); }
+.ssh-session-strip .session-tab-label { display: flex; align-items: center; gap: 8px; flex: 1; width: 100%; min-width: 0; height: 100%; padding: 0 3px 0 11px; border: 0; border-radius: 7px; background: transparent; color: inherit; font-size: 12px; text-align: left; }
+.ssh-session-strip .session-tab-label > span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ssh-session-strip .session-tab-label:focus-visible { outline-offset: -3px; }
+.ssh-session-strip .tab-close { display: grid; place-items: center; width: 23px; height: 24px; margin: 0 5px 0 0; padding: 0; flex-shrink: 0; border-radius: 6px; background: transparent; color: var(--text-muted); opacity: .65; }
+.ssh-session-strip .session-tab:hover .tab-close,.ssh-session-strip .session-tab.active .tab-close,.ssh-session-strip .session-tab:focus-within .tab-close { opacity: 1; }
+.ssh-session-strip .tab-close:hover { background: var(--surface-hover); color: var(--text); }
+.ssh-session-strip .status-dot,.session-switcher-modal .status-dot { flex-shrink: 0; }
+.ssh-session-strip .status-dot.failed,.session-switcher-modal .status-dot.failed { background: var(--danger); }
+
+.ssh-session-controls { display: flex; align-items: center; gap: 5px; flex-shrink: 0; height: 35px; -webkit-app-region: no-drag; app-region: no-drag; }
+.ssh-session-scroll-controls { display: flex; align-items: center; gap: 1px; margin-right: 2px; }
+.ssh-session-scroll-controls > button,.ssh-session-new { display: grid; place-items: center; width: 27px; height: 29px; padding: 0; border-radius: 7px; background: transparent; color: var(--text-muted); }
+.ssh-session-scroll-controls > button:hover:not(:disabled),.ssh-session-new:hover { background: var(--surface-hover); color: var(--text); }
+.ssh-session-scroll-controls > button:disabled { opacity: .28; }
+.ssh-session-new { width: 30px; height: 31px; }
+.ssh-session-menu { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 31px; padding: 0 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-secondary); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ssh-session-menu:hover,.ssh-session-menu[aria-expanded="true"] { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent); }
+.ssh-session-menu > svg:last-child { color: var(--text-muted); }
+.ssh-session-menu .session-count { display: inline-flex; align-items: center; gap: 6px; color: inherit; font-size: 11px; }
+.ssh-session-total { display: inline-grid; place-items: center; min-width: 18px; height: 19px; padding: 0 4px; border-radius: 5px; background: var(--surface-raised); color: var(--text-muted); font-size: 10px; }
+.ssh-session-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+.modal.session-switcher-modal { display: flex; flex-direction: column; width: 660px; max-height: 79vh; padding: 0; overflow: hidden; border-radius: 15px; -webkit-app-region: no-drag; app-region: no-drag; }
+.session-switcher-modal > .modal-header { padding: 20px 23px 0; margin: 0; flex-shrink: 0; }
+.session-switcher-modal > .modal-header h2 { font-size: 16px; }
+.session-switcher-search { display: flex; align-items: center; gap: 10px; margin: 17px 22px 16px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--input); color: var(--text-muted); flex-shrink: 0; }
+.session-switcher-search:focus-within { border-color: var(--accent-border); }
+.session-switcher-search input { flex: 1; width: 100%; min-width: 0; padding: 11px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font-size: 13px; }
+.session-switcher-search input:focus-visible { outline: none; }
+.session-switcher-search > button { display: grid; place-items: center; width: 25px; height: 25px; padding: 0; border-radius: 6px; background: transparent; color: var(--text-muted); }
+.session-switcher-search > button:hover { color: var(--text); background: var(--surface-hover); }
+.session-switcher-results { overflow: auto; min-height: 105px; padding: 0 12px 10px; }
+.session-switcher-row { display: flex; align-items: center; gap: 4px; margin: 3px 0; border: 1px solid transparent; border-radius: 9px; background: transparent; }
+.session-switcher-row:hover { background: var(--surface-hover); }
+.session-switcher-row.is-current { border-color: var(--accent-border); background: var(--accent-soft); }
+.session-switcher-select { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; padding: 12px 4px 12px 11px; border-radius: 8px; background: transparent; color: var(--text-secondary); text-align: left; }
+.session-switcher-select:focus-visible { outline-offset: -3px; }
+.session-switcher-icon { display: grid; place-items: center; width: 32px; height: 33px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text-muted); }
+.session-switcher-row.is-current .session-switcher-icon { border-color: var(--accent-border); background: var(--surface); color: var(--accent); }
+.session-switcher-detail { flex: 1; min-width: 0; }
+.session-switcher-detail strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--text); }
+.session-switcher-detail small { display: block; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 1.7; color: var(--text-muted); }
+.session-switcher-group { color: var(--text-secondary); }
+.session-switcher-status { display: inline-flex; align-items: center; justify-content: flex-end; gap: 7px; margin-left: 8px; font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+.session-switcher-close { display: grid; place-items: center; width: 28px; height: 29px; padding: 0; margin-right: 8px; flex-shrink: 0; border-radius: 7px; background: transparent; color: var(--text-muted); }
+.session-switcher-close:hover { background: var(--danger-soft); color: var(--danger); }
+.session-switcher-empty { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; min-height: 180px; padding: 25px; color: var(--text-muted); font-size: 12px; }
+.session-switcher-empty strong { color: var(--text-secondary); font-size: 14px; font-weight: 500; }
+.session-switcher-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 22px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
+.session-switcher-footer > span:last-child { display: inline-flex; align-items: center; gap: 6px; }
+.session-switcher-footer kbd { font-size: 9px; }
+
+@media (max-width: 1100px) {
+  .tabbar.ssh-session-strip { padding-left: 12px; padding-right: 12px; gap: 5px; }
+  .ssh-session-menu > svg:first-child { display: none; }
+  .ssh-session-menu { gap: 6px; padding: 0 8px; }
+}
+@media (max-width: 620px) {
+  .session-switcher-status { margin-left: 0; font-size: 0; gap: 0; }
+  .session-switcher-detail small { font-size: 10px; }
+  .session-switcher-select { gap: 9px; }
+  .session-switcher-footer { padding-left: 17px; padding-right: 17px; }
+}

@@ -27,7 +27,7 @@ async function launch(): Promise<Page> {
   const page = await app.firstWindow()
   await page.emulateMedia({ reducedMotion: 'reduce' })
   page.on('pageerror', (error) => errors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   return page
 }
 async function replaceText(page: Page, editor: Locator, content: string) {
@@ -48,7 +48,7 @@ async function connectSaved(page: Page) {
 try {
   let page = await launch()
   assert.equal((await page.evaluate(() => window.sshHeaven.getCredentialStatus())).available, true, 'Windows must provide OS-backed credential encryption')
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await page.getByLabel(/^Nickname/).fill('Productivity fixture')
   await page.getByLabel('Hostname or IP address', { exact: true }).fill(fixture.host)
   await page.getByLabel('SSH port', { exact: true }).fill(String(fixture.port))

@@ -27,6 +27,7 @@ npm start
 - Modern workspace with eight persistent color presets: Graphite, Midnight, Ocean, Forest, Amethyst, Ember, Pink, and Daylight. Open **Appearance** using the palette icon or quick switcher. The UI, terminal, native light/dark appearance, and editor update live.
 - Custom image or animated GIF wallpaper, with strength, blur, cover/contain, and animation controls in **Appearance**. Backgrounds are copied to this device's application data so moving the source file keeps your wallpaper. GIFs use a still frame when animation is disabled or the system requests reduced motion.
 - Custom themed title bar and window border, with native Windows caption controls, dragging from the title bar and empty workspace header/tab areas, resizing, and maximize behavior.
+- Dedicated sidebar navigation for Home, Connect, Scripts, and Vault, with a persistent collapsed mode for more terminal space. SSH sessions have their own scrollable strip and a searchable **All sessions** list.
 - Home screen with recently accessed hosts, connection timestamps, and clearable local history.
 - Give hosts memorable nicknames, and edit them from Home or the host library.
 - Saved host profiles with groups, favorites, search, editing, and removal.
@@ -59,9 +60,15 @@ npm start
 
 For individual connections, passwords are saved only when **Remember password on this device** is selected and authentication succeeds. Bulk import explicitly saves the supplied passwords without connecting to the servers. The separate credential vault uses Electron's OS-backed encryption (Windows DPAPI); plaintext passwords are never written to host profiles. Connection APIs expose availability and profile IDs only; the PIN-gated manager can explicitly reveal one selected password. Saved credentials are tied to a specific host, port, username, and authentication type and are invalidated when that identity changes or the profile is deleted. Linux plaintext `basic_text` storage is disabled. Key passphrases remain in memory and are not saved. Private keys stay in the files you select. Verify a new server fingerprint against a trusted source before accepting it.
 
+## Workspace navigation
+
+Use the sidebar for **Home**, **Connect**, **Scripts**, and **Vault**. **Connect** returns to your unfinished connection form; the **+** buttons or **Ctrl+Shift+N** start a fresh connection. The header's sidebar button switches between the host library and a compact icon rail, and remembers your choice on this device.
+
+Open SSH sessions appear in a separate strip. Tabs keep their width as more servers open; scroll with the arrow controls or choose **All sessions** to search by nickname, host, user, group, or status. Selecting a session brings its tab into view. **Ctrl+Tab / Ctrl+Shift+Tab** cycle through SSH sessions. With a tab focused, use **Left/Right**, **Home/End**, or **Delete** to navigate or close it. Switching pages keeps terminal history and connection/script drafts available.
+
 ## Vault, stream mode, and scripts
 
-Open **Vault** and enable a five-digit PIN before managing passwords or SSH keys. The manager supports revealing, copying, replacing, setting, or forgetting a server password, plus naming, importing, generating, and removing SSH key entries. Removing an entry leaves the private key file in place. Revealed passwords hide after 30 seconds; native password copies clear after 30 seconds if the clipboard still contains that same value. Stream mode disables password reveals. Management locks after five minutes, on minimize, or when leaving the Vault tab; quick connect and existing sessions continue. PIN verifiers and failed-attempt counters are protected by OS encryption, with persistent escalating lockouts. This device's PIN is separate from portable backup passphrases and is not exported.
+Open **Vault** in the sidebar and enable a five-digit PIN before managing passwords or SSH keys. The manager supports revealing, copying, replacing, setting, or forgetting a server password, plus naming, importing, generating, and removing SSH key entries. Removing an entry leaves the private key file in place. Revealed passwords hide after 30 seconds; native password copies clear after 30 seconds if the clipboard still contains that same value. Stream mode disables password reveals. Management locks after five minutes, on minimize, or when leaving Vault; quick connect and existing sessions continue. PIN verifiers and failed-attempt counters are protected by OS encryption, with persistent escalating lockouts. This device's PIN is separate from portable backup passphrases and is not exported.
 
 **Stream mode** changes display only. Recognized IPv4 and IPv6 addresses are replaced with equal-width bullets in labels, tooltips, terminal output/scrollback, and code editors. Terminal selections/copies and editor clipboard output are sanitized. Sensitive text fields hide their glyphs, while native form values, connection endpoints, saved scripts, and transmitted commands keep their real contents. The terminal parses ANSI/cursor updates before masking, including wrapped addresses and alternate-screen applications. It does not identify arbitrary secrets or mask text inside wallpaper images.
 
@@ -151,6 +158,7 @@ npm run test:input
 npm run test:stream
 npm run test:scripts
 npm run test:vault
+npm run test:navigation
 ```
 
 The tests start an isolated SSH/SFTP server on localhost with a temporary filesystem. They verify authentication and host trust, real binary transfers, queue ordering, overwrite protection, and cancellation with delayed remote handles. The Electron end-to-end test uses a temporary settings directory, never a saved personal connection. Build before running the end-to-end test.
@@ -165,7 +173,7 @@ npm run dist:win
 
 The NSIS installer and unpacked application are generated in `release/`. Development installers are unsigned. Signing and optional update notifications have a separate prepared release setup; see [RELEASE.md](RELEASE.md). Installation always stays manual.
 
-Run `npm run test:packaged` after packaging to run all seventeen automated end-to-end suites against the actual Windows executable, including SSH/SFTP, themes/wallpapers, credentials/PIN management, scripts, stream masking/paste, input timing, and existing workspace tools. The separate `npm run test:drag` harness requires real native window drags and header/control clicks; renderer-generated mouse events do not prove operating-system window movement.
+Run `npm run test:packaged` after packaging to run all eighteen automated end-to-end suites against the actual Windows executable, including SSH/SFTP, themes/wallpapers, credentials/PIN management, scripts, stream masking/paste, input timing, navigation with ten real SSH sessions, and existing workspace tools. The separate `npm run test:drag` harness requires real native window drags and header/control clicks; renderer-generated mouse events do not prove operating-system window movement.
 
 For background-only testing, set `$env:SSH_HEAVEN_BACKGROUND_TEST = '1'` before running a suite. The test app renders offscreen without showing or focusing a window; keyboard/pointer events stay inside its isolated renderer. In this mode native maximize, focus, caption-overlay, and physical-drag checks are skipped, and large layout tests use a resized offscreen viewport.
 

@@ -34,7 +34,7 @@ async function launch() {
   app = await _electron.launch({ executablePath: executable || require('electron') as string, args: [...(executable ? [] : [root]), `--user-data-dir=${dataDirectory}`], env, timeout: 30_000 })
   const current = await app.firstWindow()
   current.on('pageerror', (error) => errors.push(error.message))
-  await expect(current.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(current.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   await installObservers(current)
   page = current
   return current
@@ -158,7 +158,7 @@ try {
   await expect(current.locator('.workspace-restored-banner')).toContainText('Workspace layout QA')
   await current.screenshot({ path: path.join(root, 'test-results', 'workspace-restored.png') })
 
-  await current.getByRole('tab', { name: 'Home', exact: true }).click()
+  await current.getByRole('button', { name: 'Open home', exact: true }).click()
   await connectHost(current, 'Transport QA')
   assert.ok(transport.commands.includes('tmux new-session -A -s workspace-shell'), 'Opt-in tmux must be attached when connecting')
   await current.getByRole('button', { name: 'Server dashboard', exact: true }).click()
@@ -229,7 +229,7 @@ try {
     await window.sshHeaven.saveLibraryItem('group', { id: crypto.randomUUID(), group: 'Defaults QA', username: 'group-admin', port, keyId })
   }, { privateKeyPath: first.privateKeyPath!, port: first.port })
   await current.reload(); await installObservers(current)
-  await current.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await current.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await current.getByLabel(/^Group/).fill('Defaults QA')
   await expect(current.getByLabel('Username', { exact: true })).toHaveValue('group-admin')
   await expect(current.getByLabel('SSH port', { exact: true })).toHaveValue(String(first.port))

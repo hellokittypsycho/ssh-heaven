@@ -72,7 +72,7 @@ try {
   const executable = process.env.SSH_HEAVEN_EXECUTABLE
   app = await _electron.launch({ executablePath: executable || require('electron') as string, args: [...(executable ? [] : [root]), `--user-data-dir=${dataDirectory}`], env, timeout: 30_000 })
   page = await app.firstWindow(); page.on('pageerror', (error) => errors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   await app.evaluate(({ ipcMain, clipboard }, channel) => {
     const probe: NativeProbe = { writes: [], clipboard: '', copies: [] }
     ;(globalThis as unknown as { streamNative: NativeProbe }).streamNative = probe
@@ -93,7 +93,7 @@ try {
       }
     }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
   }, ips)
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await page.getByLabel(/^Nickname/).fill('Privacy 198.51.100.42')
   await page.getByLabel('Hostname or IP address', { exact: true }).fill(fixture.host)
   await page.getByLabel('SSH port', { exact: true }).fill(String(fixture.port))

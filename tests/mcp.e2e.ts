@@ -138,7 +138,7 @@ try {
   await connectBridge(state)
   await settings.getByRole('button', { name: 'Close dialog', exact: true }).click()
 
-  await current.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await current.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await current.getByLabel(/^Nickname/).fill('MCP fixture')
   await current.getByLabel(/^Group/).fill('MCP QA')
   await current.getByLabel('Hostname or IP address', { exact: true }).fill(fixture.host)

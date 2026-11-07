@@ -71,7 +71,7 @@ async function launch(): Promise<Page> {
   const current = await app.firstWindow()
   current.on('pageerror', (error) => rendererErrors.push(error.message))
   await current.emulateMedia({ reducedMotion: 'no-preference' })
-  await expect(current.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(current.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   await current.evaluate(() => {
     const target = window as unknown as { wallpaperOutput: string }
     target.wallpaperOutput = ''
@@ -138,7 +138,7 @@ try {
   await dialog.getByRole('button', { name: 'Done', exact: true }).click()
   await current.screenshot({ path: path.join(root, 'test-results', 'wallpaper-pink-home.png') })
 
-  await current.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await current.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await current.getByLabel(/^Nickname/).fill('Wallpaper fixture')
   await current.getByLabel('Hostname or IP address', { exact: true }).fill(fixture.host)
   await current.getByLabel('SSH port', { exact: true }).fill(String(fixture.port))

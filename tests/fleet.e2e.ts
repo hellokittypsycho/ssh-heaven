@@ -49,7 +49,10 @@ async function reviewAndRun(page: Page, commandDialog: Locator, command: string)
 async function assertNoInteractiveSessions(page: Page) {
   await expect(page.locator('.session-workspace')).toHaveCount(0)
   await expect(page.locator('.xterm-helper-textarea')).toHaveCount(0)
-  assert.deepEqual(await page.getByRole('tab').allTextContents(), ['Home', 'New connection', 'Scripts', 'Vault'])
+  await expect(page.getByRole('tablist', { name: 'Connection sessions', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('tab')).toHaveCount(0)
+  for (const name of ['Open home', 'Open scripts', 'Open vault']) await expect(page.getByRole('button', { name, exact: true })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true })).toBeVisible()
 }
 
 try {
@@ -68,7 +71,7 @@ try {
   })
   const page = await app.firstWindow()
   page.on('pageerror', (error) => rendererErrors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   await page.evaluate(() => {
     const target = window as unknown as { fleetEvents: GroupCommandEvent[] }
     target.fleetEvents = []

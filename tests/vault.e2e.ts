@@ -30,7 +30,7 @@ async function launch() {
   app = await _electron.launch({ executablePath: executable || require('electron') as string, args: [...(executable ? [] : [root]), `--user-data-dir=${dataDirectory}`], env, timeout: 30_000 })
   page = await app.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Vault', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open vault', exact: true })).toBeVisible()
   assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), false, 'Vault E2E must keep the application hidden')
   await app.evaluate(({ clipboard }) => {
     const target = globalThis as unknown as { vaultTestClipboard: string }
@@ -39,7 +39,7 @@ async function launch() {
     clipboard.readText = async () => target.vaultTestClipboard
   })
 }
-async function openVault() { await page!.getByRole('tab', { name: 'Vault', exact: true }).click(); await expect(vault()).toBeVisible() }
+async function openVault() { await page!.getByRole('button', { name: 'Open vault', exact: true }).click(); await expect(vault()).toBeVisible() }
 async function unlock(value = pin) {
   await vault().getByLabel('Vault PIN', { exact: true }).fill(value)
   await vault().getByRole('button', { name: 'Unlock vault', exact: true }).click()
@@ -226,7 +226,7 @@ try {
   await unlock(newPin)
   await vault().getByRole('button', { name: 'Reveal password for Vault server', exact: true }).click()
   await expect(secret).toHaveText(fixture.password)
-  await page!.getByRole('tab', { name: 'Home', exact: true }).click()
+  await page!.getByRole('button', { name: 'Open home', exact: true }).click()
   await expect.poll(async () => (await page!.evaluate(() => window.sshHeaven.getVaultState())).unlocked).toBe(false)
   await expect(page!.locator('.vault-secret')).toHaveCount(0)
   await page!.locator('.sidebar').getByRole('button', { name: 'Quick connect Vault server', exact: true }).click()

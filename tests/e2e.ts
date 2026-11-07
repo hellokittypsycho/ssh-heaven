@@ -33,9 +33,11 @@ try {
   const page = await app.firstWindow()
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
+  await expect(page.getByRole('tablist', { name: 'Connection sessions', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('tab')).toHaveCount(0)
   await page.screenshot({ path: path.join(root, 'test-results', 'home-empty.png') })
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'New connection', exact: true })).toBeVisible()
   await page.screenshot({ path: path.join(root, 'test-results', 'welcome.png') })
   const appWindow = await app.browserWindow(page)
@@ -68,6 +70,8 @@ try {
   await expect(page.locator('.fingerprint-card code')).toContainText('SHA256:')
   await page.getByRole('button', { name: 'Trust & connect', exact: true }).click()
   await expect(page.locator('.terminal-footer').getByText('Connected', { exact: true })).toBeVisible()
+  await expect(page.getByRole('tablist', { name: 'Connection sessions', exact: true }).getByRole('tab')).toHaveCount(1)
+  await expect(page.getByRole('tab', { name: 'Local integration', exact: true })).toHaveAttribute('aria-selected', 'true')
 
   await page.locator('.xterm-helper-textarea').focus()
   await page.keyboard.type('echo electron-terminal-verified')
@@ -219,12 +223,12 @@ try {
   assert.ok(metadata.includes('Development'), 'Host groups must persist')
   assert.equal(JSON.parse(metadata).profiles[0].favorite, true, 'Favorites must persist')
 
-  // Switching tabs must preserve an unfinished connection form.
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  // Sidebar navigation back from an SSH tab preserves the unfinished draft.
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await page.getByLabel('Hostname or IP address').fill('unfinished.example')
   await page.getByLabel('Username', { exact: true }).fill('unfinished-user')
   await page.getByRole('tab', { name: 'Local integration', exact: true }).click()
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await expect(page.getByLabel('Hostname or IP address')).toHaveValue('unfinished.example')
   await expect(page.getByLabel('Username', { exact: true })).toHaveValue('unfinished-user')
 
@@ -236,7 +240,7 @@ try {
   await page.getByRole('combobox', { name: 'Search hosts and actions', exact: true }).press('Enter')
   await page.getByLabel('Password', { exact: true }).fill(fixture.password)
   await page.getByRole('button', { name: 'Connect', exact: true }).click()
-  await expect(page.locator('.session-count')).toContainText('2 active sessions')
+  await expect(page.getByRole('status', { name: 'SSH session summary', exact: true })).toHaveText('2 online')
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await page.locator('.session-workspace:not(.hidden-workspace) .xterm-helper-textarea').focus()
   await page.keyboard.type('echo second-session-verified')
@@ -245,7 +249,7 @@ try {
   await page.keyboard.press('Control+w')
   await expect(page.getByRole('dialog', { name: 'Close this session?', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Keep open', exact: true }).click()
-  await expect(page.locator('.session-count')).toContainText('2 active sessions')
+  await expect(page.getByRole('status', { name: 'SSH session summary', exact: true })).toHaveText('2 online')
   await page.keyboard.press('Control+Shift+Tab')
   await expect(page.getByRole('tab', { name: 'Local integration', exact: true }).first()).toHaveAttribute('aria-selected', 'true')
   await page.keyboard.press('Control+Tab')

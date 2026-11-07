@@ -34,7 +34,7 @@ async function trustAndConnect() {
   }, { timeout: 20_000 }).toBe(1)
 }
 async function assertDraft() {
-  await page!.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page!.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await expect(page!.getByLabel(/^Nickname/)).toHaveValue('Unfinished draft')
   await expect(page!.getByLabel('Hostname or IP address', { exact: true })).toHaveValue('draft.example')
   await expect(page!.getByLabel('Username', { exact: true })).toHaveValue('draft-user')
@@ -48,7 +48,7 @@ try {
   app = await _electron.launch({ executablePath: executable || require('electron') as string, args: [...(executable ? [] : [root]), `--user-data-dir=${dataDirectory}`], env, timeout: 30_000 })
   page = await app.firstWindow()
   page.on('pageerror', (error) => rendererErrors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   // Observe native invocation metadata only, without returning passwords to the
   // renderer or replacing the real vault, authentication, or SSH transport.
   await app.evaluate(({ ipcMain, clipboard }, channel) => {
@@ -78,7 +78,7 @@ try {
   await page.reload()
   await expect(sidebarQuick('Remembered server')).toBeVisible()
 
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await page.getByLabel(/^Nickname/).fill('Unfinished draft')
   await page.getByLabel('Hostname or IP address', { exact: true }).fill('draft.example')
   await page.getByLabel('Username', { exact: true }).fill('draft-user')
@@ -87,7 +87,7 @@ try {
   // commits the disabled state or the native host-key modal appears.
   await sidebarQuick('Remembered server').evaluate((element) => { (element as HTMLButtonElement).click(); (element as HTMLButtonElement).click() })
   await expect(page.getByRole('dialog', { name: 'Verify server identity', exact: true })).toBeVisible()
-  await expect(page.getByRole('tab', { name: 'New connection', exact: true })).toHaveAttribute('aria-selected', 'false')
+  await expect(page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true })).not.toHaveAttribute('aria-current', 'page')
   await expect(sidebarQuick('Remembered server')).toBeDisabled()
   assert.equal((await attempts()).length, 1, 'Repeated clicks must create one pending SSH connection')
   await trustAndConnect()
@@ -95,17 +95,17 @@ try {
   assert.deepEqual((await attempts()).map(({ useSavedCredential, hasPassword }) => ({ useSavedCredential, hasPassword })), [{ useSavedCredential: true, hasPassword: false }])
   await assertDraft()
 
-  await page.getByRole('tab', { name: 'Home', exact: true }).click()
+  await page.getByRole('button', { name: 'Open home', exact: true }).click()
   await page.getByRole('button', { name: 'Quick connect recent Remembered server', exact: true }).click()
   await trustAndConnect()
-  await expect(page.locator('.session-count')).toContainText('2 active sessions')
+  await expect(page.getByRole('status', { name: 'SSH session summary', exact: true })).toHaveText('2 online')
   await page.keyboard.press('Control+k')
   const palette = page.getByRole('dialog', { name: 'Quick switcher', exact: true })
   await palette.getByRole('combobox', { name: 'Search hosts and actions', exact: true }).fill('Quick connect Remembered server')
   await expect(palette.getByRole('option', { name: 'Quick connect Remembered server', exact: true })).toBeVisible()
   await palette.getByRole('combobox', { name: 'Search hosts and actions', exact: true }).press('Enter')
   await trustAndConnect()
-  await expect(page.locator('.session-count')).toContainText('3 active sessions')
+  await expect(page.getByRole('status', { name: 'SSH session summary', exact: true })).toHaveText('3 online')
   await assertDraft()
   assert.ok((await attempts()).every((attempt) => attempt.useSavedCredential && !attempt.hasPassword), 'Every quick connection must use the native vault without a renderer password')
   assert.deepEqual(await app.evaluate(() => (globalThis as unknown as { quickConnectClipboard: string[] }).quickConnectClipboard), [])
@@ -161,7 +161,7 @@ try {
 
   // An unsaved recent connection gets an ordinary Open action. It becomes
   // eligible only after matching, separately saved metadata has a vault entry.
-  await page.getByRole('button', { name: 'Open a new connection', exact: true }).click()
+  await page.locator('.sidebar').getByRole('button', { name: 'Create a new connection', exact: true }).click()
   await page.getByLabel(/^Nickname/).fill('Unsaved recent')
   await page.getByLabel('Hostname or IP address', { exact: true }).fill(unsaved.host)
   await page.getByLabel('SSH port', { exact: true }).fill(String(unsaved.port))
@@ -170,7 +170,7 @@ try {
   await page.getByRole('checkbox', { name: 'Save to hosts', exact: true }).uncheck()
   await page.getByRole('button', { name: 'Connect', exact: true }).click()
   await trustAndConnect()
-  await page.getByRole('tab', { name: 'Home', exact: true }).click()
+  await page.getByRole('button', { name: 'Open home', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Open Unsaved recent connection', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Quick connect recent Unsaved recent', exact: true })).toHaveCount(0)
   await page.evaluate(async (host) => {

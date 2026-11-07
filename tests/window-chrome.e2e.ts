@@ -48,7 +48,7 @@ async function launch(): Promise<Page> {
   })
   await page.emulateMedia({ reducedMotion: 'reduce' })
   page.on('pageerror', (error) => rendererErrors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   await expect(page.locator('.app-titlebar')).toBeVisible()
   await page.evaluate(() => {
     const probe: ChromeProbe = { events: [] }
@@ -93,6 +93,9 @@ async function nativeAction(action: 'maximize' | 'unmaximize' | 'minimize' | 're
 }
 
 async function assertTitlebar(page: Page) {
+  await expect(page.getByRole('tablist', { name: 'Connection sessions', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('tab')).toHaveCount(0)
+  for (const name of ['Open home', 'Open scripts', 'Open vault']) await expect(page.getByRole('button', { name, exact: true })).toBeVisible()
   const dimensions = await page.locator('.app-titlebar').evaluate((element) => {
     const rectangle = element.getBoundingClientRect()
     const draggable = [element, ...element.querySelectorAll('*')].some((child) => getComputedStyle(child).getPropertyValue('-webkit-app-region') === 'drag')
@@ -105,11 +108,11 @@ async function assertTitlebar(page: Page) {
   assert.equal(dimensions.draggable, true, 'The custom titlebar must declare native drag-region CSS; physical movement is verified separately')
   const regions = await page.evaluate(() => ({
     header: getComputedStyle(document.querySelector('.topbar')!).getPropertyValue('-webkit-app-region'),
-    tabs: getComputedStyle(document.querySelector('.tabbar')!).getPropertyValue('-webkit-app-region'),
-    controls: [...document.querySelectorAll('.topbar button,.tabbar button')].map((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')),
+    tabs: document.querySelector('.ssh-session-strip') ? getComputedStyle(document.querySelector('.ssh-session-strip')!).getPropertyValue('-webkit-app-region') : null,
+    controls: [...document.querySelectorAll('.topbar button,[role="tablist"][aria-label="Connection sessions"] button')].map((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')),
   }))
-  assert.equal(regions.header, 'drag'); assert.equal(regions.tabs, 'drag')
-  assert.ok(regions.controls.every((value) => value === 'no-drag'), 'Header and tab controls must remain outside drag regions')
+  assert.equal(regions.header, 'drag'); assert.equal(regions.tabs, null)
+  assert.ok(regions.controls.every((value) => value === 'no-drag'), 'Workspace header controls must remain outside drag regions')
   if (process.platform === 'win32' && !background) {
     await expect.poll(() => page.evaluate(() => (navigator as Navigator & { windowControlsOverlay?: { visible: boolean } }).windowControlsOverlay?.visible ?? false)).toBe(true)
     const overlay = await page.evaluate(() => {
@@ -237,9 +240,9 @@ try {
     assert.ok(events.some((event) => event.fullscreen), 'A real full-screen event must reach the renderer')
     assert.ok(events.some((event) => !event.focused), 'Focus-loss events must reach the renderer')
   }
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
-  await expect(page.getByRole('tab', { name: 'New connection', exact: true })).toHaveAttribute('aria-selected', 'true')
-  await page.getByRole('tab', { name: 'Home', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
+  await expect(page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true })).toHaveAttribute('aria-current', 'page')
+  await page.getByRole('button', { name: 'Open home', exact: true }).click()
   await assertHidden()
   await app!.close()
   app = undefined
@@ -249,7 +252,7 @@ try {
   await assertWindowState(page)
   await assertTitlebar(page)
   assert.deepEqual(rendererErrors, [], `Renderer exceptions: ${rendererErrors.join(', ')}`)
-  console.log(background ? 'Background window chrome E2E passed: hidden offscreen renderer, titlebar/header/tab drag CSS and clickable controls, large/compact geometry, available native color APIs, persistent themes, and screenshots. Native physical movement/overlay/window-state actions remain unverified in this run.' : 'Window chrome E2E passed: themed custom titlebar, native Windows overlay geometry, real maximize/restore/minimize/fullscreen/focus state synchronization, compact layout, validated native colors, persistent appearance, and dark/light screenshots.')
+  console.log(background ? 'Background window chrome E2E passed: hidden offscreen renderer, titlebar/header drag CSS and sidebar navigation without an empty session strip, large/compact geometry, available native color APIs, persistent themes, and screenshots. Native physical movement/overlay/window-state actions remain unverified in this run.' : 'Window chrome E2E passed: themed custom titlebar, native Windows overlay geometry, real maximize/restore/minimize/fullscreen/focus state synchronization, sidebar navigation, compact layout, validated native colors, persistent appearance, and dark/light screenshots.')
 } catch (error) {
   if (app) {
     const page = await app.firstWindow().catch(() => undefined)

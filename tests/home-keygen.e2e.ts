@@ -51,7 +51,7 @@ async function launch(): Promise<Page> {
 }
 
 async function openHome(page: Page) {
-  await page.getByRole('tab', { name: 'Home', exact: true }).click()
+  await page.getByRole('button', { name: 'Open home', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Your workspace, ready.', exact: true })).toBeVisible()
   return page.getByRole('region', { name: 'Recently accessed hosts', exact: true })
 }
@@ -111,7 +111,7 @@ try {
   // Key generation itself must not create a recently accessed host. Only a
   // successful SSH session belongs in this list.
   await expect((await openHome(page)).locator('.recent-host-card')).toHaveCount(0)
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   await page.getByLabel(/^Nickname/).fill(originalNickname)
   await page.getByLabel('Hostname or IP address', { exact: true }).fill(fixture.host)
   await page.getByLabel('SSH port', { exact: true }).fill(String(fixture.port))

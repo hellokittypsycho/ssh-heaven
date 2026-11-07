@@ -1,6 +1,6 @@
 {
   "name": "ssh-heaven",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "A focused desktop SSH terminal and SFTP workspace.",
   "author": "SSH Heaven",
@@ -32,6 +32,7 @@
     "test:stream": "tsx tests/stream-terminal.e2e.ts",
     "test:scripts": "tsx tests/scripts.e2e.ts",
     "test:vault": "tsx tests/vault.e2e.ts",
+    "test:navigation": "tsx tests/navigation.e2e.ts",
     "test:drag": "tsx tests/window-drag.e2e.ts",
     "test:packaged": "node scripts/test-packaged.mjs",
     "dist:win": "npm run build && electron-builder --win nsis",

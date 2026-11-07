@@ -107,7 +107,7 @@ try {
     for (const window of BrowserWindow.getAllWindows()) { window.on('show', () => events.push('show')); window.on('focus', () => events.push('focus')) }
   })
   page.on('pageerror', (error) => rendererErrors.push(error.message))
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   await assertHidden()
   await page.evaluate(async (hosts) => {
     for (const [index, host] of hosts.entries()) {

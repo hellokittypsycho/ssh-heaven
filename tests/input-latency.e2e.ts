@@ -90,7 +90,7 @@ try {
   console.log('[input-latency] native rendering state', await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((window) => ({ visible: window.isVisible(), focused: window.isFocused(), offscreen: window.webContents.isOffscreen(), painting: window.webContents.isOffscreen() ? window.webContents.isPainting() : null, frameRate: window.webContents.isOffscreen() ? window.webContents.getFrameRate() : null, throttling: window.webContents.getBackgroundThrottling() }))))
   page.on('pageerror', (error) => errors.push(error.message))
   await page.emulateMedia({ reducedMotion: 'reduce' })
-  await expect(page.getByRole('tab', { name: 'Home', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
   const frameProbe = await page.evaluate(async () => {
     const started = performance.now()
     let deadline: ReturnType<typeof setTimeout> | undefined
@@ -128,7 +128,7 @@ try {
       sample.trusted = event.isTrusted
     }, true)
   })
-  await page.getByRole('tab', { name: 'New connection', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Workspace navigation', exact: true }).getByRole('button', { name: 'New connection', exact: true }).click()
   progress('connecting local SSH fixture')
   await page.getByLabel(/^Nickname/).fill('Latency fixture')
   await page.getByLabel('Hostname or IP address', { exact: true }).fill(fixture.host)
