@@ -2,6 +2,8 @@
 
 A Windows-first desktop SSH terminal and SFTP workspace built with TypeScript, Electron, React, xterm.js, and ssh2.
 
+[Download the latest Windows release](https://github.com/hellokittypsycho/ssh-heaven/releases/latest). Preview installers are unsigned; downloads and installation stay manual.
+
 ## Run locally
 
 Install Node.js 24 LTS, then run:

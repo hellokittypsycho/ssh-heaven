@@ -15,11 +15,11 @@ Development builds have no release URLs and make no update requests. Their Updat
 The manifest contains only a stable semantic version:
 
 ```json
-{ "version": "0.5.0" }
+{ "version": "0.7.0" }
 ```
 
 Configured builds check once shortly after startup and when the user chooses **Check for updates**. No host inventory, credentials, or personal settings are sent. Requests have an eight-second timeout, a 16 KiB size limit, and do not follow redirects. Download links are fixed in the application build, not accepted from the remote manifest.
 
-Keep the app ID and product name stable across releases so the manually launched NSIS installer recognizes the existing app. Test an installed-version upgrade on a separate machine before public rollout. This project currently has no signing certificate or hosted release, so live notification and signed installer verification remains a release setup step. macOS and Linux require their own distribution validation.
+Keep the app ID and product name stable across releases so the manually launched NSIS installer recognizes the existing app. Test an installed-version upgrade on a separate machine before public rollout. Unsigned Windows preview installers are published on [GitHub Releases](https://github.com/hellokittypsycho/ssh-heaven/releases/latest), with a SHA-256 checksum file. A signing certificate and live in-app update notifications remain unconfigured. macOS and Linux require their own distribution validation.
 
 Reference: [electron-builder Windows signing](https://www.electron.build/code-signing-win.html). Consult documentation matching the pinned builder version before upgrading release tooling.
