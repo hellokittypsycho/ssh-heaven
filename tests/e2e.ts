@@ -234,10 +234,13 @@ try {
 
   // Open a second session to a remembered host; the previous terminal remains mounted.
   await page.keyboard.press('Control+k')
-  await page.getByRole('combobox', { name: 'Search hosts and actions', exact: true }).fill('Development')
-  await expect(page.getByRole('option', { name: /Local integration/ })).toBeVisible()
+  const hostPalette = page.getByRole('dialog', { name: 'Quick switcher', exact: true })
+  await hostPalette.getByRole('tablist', { name: 'Switcher filters', exact: true }).getByRole('tab', { name: 'Hosts', exact: true }).click()
+  const hostSearch = hostPalette.getByRole('combobox', { name: 'Search hosts and actions', exact: true })
+  await hostSearch.fill('Development')
+  await expect(hostPalette.getByRole('option', { name: /Local integration/ })).toBeVisible()
   await page.screenshot({ path: path.join(root, 'test-results', 'command-palette.png') })
-  await page.getByRole('combobox', { name: 'Search hosts and actions', exact: true }).press('Enter')
+  await hostSearch.press('Enter')
   await page.getByLabel('Password', { exact: true }).fill(fixture.password)
   await page.getByRole('button', { name: 'Connect', exact: true }).click()
   await expect(page.getByRole('status', { name: 'SSH session summary', exact: true })).toHaveText('2 online')

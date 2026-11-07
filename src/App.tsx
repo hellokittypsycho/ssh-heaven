@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { Activity, ArrowLeft, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Columns2, Command, FileKey2, Folder, FolderOpen, House, KeyRound, Layers, LayoutGrid, ListPlus, LoaderCircle, LockKeyhole, Network, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Play, Plus, Search, Server, Settings2, ShieldCheck, ShieldQuestion, ShieldX, Star, TerminalSquare, Trash2, Unplug, X, Zap } from 'lucide-react'
 import type { ConnectRequest, CredentialStatus, GeneratedKey, HostKeyChallenge, HostProfile, LibraryState, RecentHost, SavedWorkspace, SessionStatus, UpdateState, WorkspaceLayout, McpState } from '../shared/types'
 import { FileBrowser } from './components/FileBrowser'
@@ -21,7 +21,8 @@ import { ScriptsPanel } from './components/ScriptsPanel'
 import { VaultPanel } from './components/VaultPanel'
 import { SessionStrip } from './components/SessionStrip'
 import { useStreamMode } from './stream-mode'
-import { FileCode2, Radio } from 'lucide-react'
+import { createNavigationHistory, moveHistory, navigateHistory, pruneNavigationHistory } from './navigation-history'
+import { Download, FileCode2, Radio } from 'lucide-react'
 
 type Session = { id: string; profile: HostProfile; status: SessionStatus['status']; message?: string; everConnected?: boolean; retryMessage?: string }
 type Draft = HostProfile & { password: string; passphrase: string }
@@ -29,6 +30,17 @@ const blankDraft = (): Draft => ({ id: crypto.randomUUID(), name: '', host: '', 
 const api = window.sshHeaven
 const emptyLibrary: LibraryState = { runbooks: [], keys: [], groupDefaults: [], workspaces: [], tunnelRules: [] }
 const sameEndpoint = (a: HostProfile, b: HostProfile) => a.host.toLowerCase() === b.host.toLowerCase() && a.port === b.port && a.username === b.username
+const workspacePages = new Set(['home', 'new', 'scripts', 'vault'])
+const hostGroupKey = (group: string | null) => group === null ? 'ungrouped' : `group:${group}`
+function focusConnectionField(selector: string) {
+  requestAnimationFrame(() => {
+    const form = document.querySelector<HTMLElement>('.connection-form-workspace:not([hidden])')
+    if (!form || document.querySelector('[role="dialog"]')) return
+    const focused = document.activeElement
+    if (focused instanceof HTMLElement && form.contains(focused) && focused.matches('input, select, textarea, [contenteditable="true"]')) return
+    form.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true })
+  })
+}
 
 const histories = new Map<string, { chunks: Uint8Array[]; bytes: number }>()
 const outputListeners = new Map<string, Set<(data: Uint8Array) => void>>()
@@ -152,7 +164,11 @@ export function App() {
   const [library, setLibrary] = useState<LibraryState>(emptyLibrary)
   const [recentHosts, setRecentHosts] = useState<RecentHost[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
-  const [activeTab, setActiveTab] = useState('home')
+  const [navigation, setNavigation] = useState(() => createNavigationHistory('home'))
+  const activeTab = navigation.entries[navigation.index]
+  const setActiveTab = useCallback((next: SetStateAction<string>) => {
+    setNavigation((current) => navigateHistory(current, typeof next === 'function' ? next(current.entries[current.index]) : next))
+  }, [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem('ssh-heaven:sidebar-collapsed') === 'true' } catch { return false }
   })
@@ -167,6 +183,23 @@ export function App() {
   const quickConnectingRef = useRef(new Set<string>())
   const [search, setSearch] = useState('')
   const [hostFilter, setHostFilter] = useState<'all' | 'favorites'>('all')
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem('ssh-heaven:collapsed-host-groups') || '[]')
+      return new Set(Array.isArray(stored) ? stored.filter((value): value is string => typeof value === 'string' && value.length <= 106).slice(-1000) : [])
+    } catch { return new Set() }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('ssh-heaven:collapsed-host-groups', JSON.stringify([...collapsedGroups])) } catch { /* Keep navigation usable when storage is unavailable. */ }
+  }, [collapsedGroups])
+  const toggleHostGroup = useCallback((group: string | null) => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current), key = hostGroupKey(group)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return new Set([...next].slice(-1000))
+    })
+  }, [])
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [keyGeneratorOpen, setKeyGeneratorOpen] = useState(false)
   const [keyGeneratorForVault, setKeyGeneratorForVault] = useState(false)
@@ -179,6 +212,7 @@ export function App() {
   const [commandGroup, setCommandGroup] = useState<string | null>(null)
   const [initialGroupCommand, setInitialGroupCommand] = useState('')
   const [managementOpen, setManagementOpen] = useState(false)
+  const [managementStart, setManagementStart] = useState<'runbooks' | 'updates'>('runbooks')
   const [mcpOpen, setMcpOpen] = useState(false)
   const [mcpState, setMcpState] = useState<McpState | null>(null)
   const [workspacesOpen, setWorkspacesOpen] = useState(false)
@@ -191,6 +225,7 @@ export function App() {
   const [workspaceNeeds, setWorkspaceNeeds] = useState<{ profile: HostProfile; sessionId: string }[]>([])
   const [credentialSessionId, setCredentialSessionId] = useState<string | null>(null)
   const [availableUpdate, setAvailableUpdate] = useState<UpdateState | null>(null)
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null)
   const [credentialStatus, setCredentialStatus] = useState<CredentialStatus | null>(null)
   const [editing, setEditing] = useState<{ sessionId: string; path: string } | null>(null)
   const [editorRefreshToken, setEditorRefreshToken] = useState(0)
@@ -211,6 +246,14 @@ export function App() {
   const workspaceConnectingRef = useRef(false)
   const dismissedUpdate = useRef<string | undefined>(undefined)
   sessionsRef.current = sessions
+  useLayoutEffect(() => {
+    const valid = new Set([...workspacePages, ...sessions.map((session) => session.id)])
+    setNavigation((current) => pruneNavigationHistory(current, (id) => valid.has(id)))
+  }, [sessions])
+  const moveNavigation = useCallback((direction: -1 | 1) => {
+    const valid = new Set([...workspacePages, ...sessionsRef.current.map((session) => session.id)])
+    setNavigation((current) => moveHistory(pruneNavigationHistory(current, (id) => valid.has(id)), direction))
+  }, [])
   const notifyError = useCallback((error: unknown) => setToast({ message: errorMessage(error), kind: 'error' }), [])
   const refreshRecentHosts = useCallback(async () => {
     const recent = await api.listRecentHosts()
@@ -281,6 +324,7 @@ export function App() {
     })
     const stopHostKey = api.onHostKey((challenge) => setChallenges((current) => [...current, challenge]))
     const update = (state: UpdateState) => {
+      setUpdateState(state)
       setAvailableUpdate(state.status === 'available' && state.version !== dismissedUpdate.current ? state : null)
     }
     let receivedUpdate = false
@@ -366,7 +410,7 @@ export function App() {
     setDraft({ ...profile, id: collision ? crypto.randomUUID() : profile.id, password: '', passphrase: '' })
     setDraftVersion((version) => version + 1)
     setActiveTab('new')
-    requestAnimationFrame(() => document.querySelector<HTMLInputElement>(focusAuthentication ? '.connection-card input[type="password"]' : '#connection-name')?.focus())
+    focusConnectionField(focusAuthentication ? '.connection-card input[type="password"]' : '#connection-name')
   }, [profiles])
   async function quickConnect(candidate: HostProfile) {
     if (quickConnectingRef.current.has(candidate.id)) return
@@ -385,7 +429,7 @@ export function App() {
         setActiveTab('new')
         setCredentialSessionId(sessionId || null)
         setCredentialError(message)
-        requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.connection-card input[type="password"]')?.focus())
+        focusConnectionField('.connection-card input[type="password"]')
       }
       if (!saved || !sameEndpoint(saved, candidate) || saved.authType !== candidate.authType || saved.authType !== 'password') {
         openCredentials(saved ?? candidate, 'The saved connection details changed. Review them before connecting.')
@@ -448,7 +492,9 @@ export function App() {
   const closeBulkImport = useCallback(() => setBulkImportOpen(false), [])
   const openGroupCommand = useCallback(() => { setInitialGroupCommand(''); setCommandGroup('') }, [])
   const closeGroupCommand = useCallback(() => { setCommandGroup(null); setInitialGroupCommand('') }, [])
-  const openManagement = useCallback(() => setManagementOpen(true), [])
+  const openManagement = useCallback(() => { setManagementStart('runbooks'); setManagementOpen(true) }, [])
+  const openUpdates = useCallback(() => { setManagementStart('updates'); setManagementOpen(true) }, [])
+  const checkUpdates = useCallback(() => { openUpdates(); void api.checkForUpdates().catch(notifyError) }, [openUpdates, notifyError])
   const closeManagement = useCallback(() => setManagementOpen(false), [])
   const openMcp = useCallback(() => setMcpOpen(true), [])
   const closeMcp = useCallback(() => setMcpOpen(false), [])
@@ -545,7 +591,7 @@ export function App() {
     setGeneratedKey({ id: crypto.randomUUID(), path: key.privateKeyPath })
     setActiveTab('new')
     setKeyGeneratorOpen(false)
-    requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.connection-card input[type="password"]')?.focus())
+    focusConnectionField('.connection-card input[type="password"]')
   }, [])
   const cancelClose = useCallback(() => { if (!closing) setCloseTarget(null) }, [closing])
   useLayoutEffect(() => {
@@ -597,9 +643,16 @@ export function App() {
   useEffect(() => () => { for (const timer of retryTimers.current.values()) clearTimeout(timer); retryTimers.current.clear() }, [])
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) return
-      if (event.shiftKey && event.code === 'KeyS') { event.preventDefault(); event.stopPropagation(); streamMode.toggle(); return }
+      const modifier = event.ctrlKey || event.metaKey
+      if (modifier && !event.altKey && event.shiftKey && event.code === 'KeyS') { event.preventDefault(); event.stopPropagation(); streamMode.toggle(); return }
       if (document.querySelector('[role="dialog"]')) return
+      if (event.altKey && !modifier && !event.shiftKey && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
+        event.preventDefault(); event.stopPropagation(); moveNavigation(event.code === 'ArrowLeft' ? -1 : 1); return
+      }
+      if (!modifier || event.altKey) return
+      if (!event.shiftKey && /^Digit[1-4]$/.test(event.code)) {
+        event.preventDefault(); event.stopPropagation(); setActiveTab(['home', 'new', 'scripts', 'vault'][Number(event.code.slice(-1)) - 1]); return
+      }
       if (event.code === 'KeyK') { event.preventDefault(); event.stopPropagation(); setPaletteOpen(true); return }
       if (event.shiftKey && event.code === 'KeyN') { event.preventDefault(); event.stopPropagation(); newConnection(); return }
       if (event.code === 'Tab') {
@@ -617,8 +670,9 @@ export function App() {
     }
     document.addEventListener('keydown', handle, true)
     return () => document.removeEventListener('keydown', handle, true)
-  }, [activeTab, newConnection, requestCloseSession, streamMode.toggle])
-  const filtered = profiles.filter((profile) => (hostFilter === 'all' || profile.favorite) && `${profile.name} ${profile.host} ${profile.username} ${profile.group ?? ''}`.toLowerCase().includes(search.toLowerCase()))
+  }, [activeTab, newConnection, requestCloseSession, streamMode.toggle, moveNavigation, setActiveTab])
+  const hostQuery = search.trim().toLowerCase()
+  const filtered = profiles.filter((profile) => (hostFilter === 'all' || profile.favorite) && `${profile.name} ${profile.host} ${profile.username} ${profile.group ?? ''}`.toLowerCase().includes(hostQuery))
   const groups = [...new Set([...profiles.map((profile) => profile.group).filter((group): group is string => !!group), ...library.groupDefaults.map((defaults) => defaults.group)])].sort((a, b) => a.localeCompare(b))
   const groupedHosts = [...new Set(filtered.map((profile) => profile.group || null))].sort((a, b) => a === null ? 1 : b === null ? -1 : a.localeCompare(b)).map((group) => ({ group, name: group ?? 'Ungrouped', hosts: filtered.filter((profile) => (profile.group || null) === group).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite) || a.name.localeCompare(b.name)) }))
   const currentRecentHosts = recentHosts.map((recent) => ({ ...recent, profile: profiles.find((profile) => profile.id === recent.profile.id && sameEndpoint(profile, recent.profile)) ?? profiles.find((profile) => sameEndpoint(profile, recent.profile)) ?? recent.profile }))
@@ -628,28 +682,28 @@ export function App() {
     <aside id="workspace-sidebar" className="sidebar" aria-label="Workspace sidebar">
       <div className="brand" title="SSH Heaven"><div className="brand-mark"><TerminalSquare size={23} strokeWidth={1.8} /></div><div><strong>SSH <span>Heaven</span></strong><small>SSH & SFTP workspace</small></div></div>
       <nav className="workspace-nav" aria-label="Workspace navigation">
-        <button className="workspace-nav-item" onClick={openHome} aria-label="Open home" title="Home" aria-current={activeTab === 'home' ? 'page' : undefined}><House size={17} /><span>Home</span></button>
-        <button className="workspace-nav-item" onClick={() => setActiveTab('new')} aria-label="New connection" title="Connection editor" aria-current={activeTab === 'new' ? 'page' : undefined}><TerminalSquare size={17} /><span>Connect</span></button>
-        <button className="workspace-nav-item" onClick={openScripts} aria-label="Open scripts" title="Scripts" aria-current={activeTab === 'scripts' ? 'page' : undefined}><FileCode2 size={17} /><span>Scripts</span><small>{library.runbooks.length || ''}</small></button>
-        <button className="workspace-nav-item" onClick={openVault} aria-label="Open vault" title="Vault" aria-current={activeTab === 'vault' ? 'page' : undefined}><LockKeyhole size={17} /><span>Vault</span></button>
+        <button className="workspace-nav-item" onClick={openHome} aria-label="Open home" title="Home (Ctrl+1)" aria-keyshortcuts="Control+1 Meta+1" aria-current={activeTab === 'home' ? 'page' : undefined}><House size={17} /><span>Home</span></button>
+        <button className="workspace-nav-item" onClick={() => setActiveTab('new')} aria-label="New connection" title="Connection editor (Ctrl+2)" aria-keyshortcuts="Control+2 Meta+2" aria-current={activeTab === 'new' ? 'page' : undefined}><TerminalSquare size={17} /><span>Connect</span></button>
+        <button className="workspace-nav-item" onClick={openScripts} aria-label="Open scripts" title="Scripts (Ctrl+3)" aria-keyshortcuts="Control+3 Meta+3" aria-current={activeTab === 'scripts' ? 'page' : undefined}><FileCode2 size={17} /><span>Scripts</span><small>{library.runbooks.length || ''}</small></button>
+        <button className="workspace-nav-item" onClick={openVault} aria-label="Open vault" title="Vault (Ctrl+4)" aria-keyshortcuts="Control+4 Meta+4" aria-current={activeTab === 'vault' ? 'page' : undefined}><LockKeyhole size={17} /><span>Vault</span></button>
       </nav>
       <div className="host-library">
         <div className="sidebar-section-heading"><span>Saved hosts <small>{profiles.length}</small></span><div className="sidebar-heading-actions"><button className="icon-button" title="Bulk import hosts" aria-label="Bulk import hosts" onClick={openBulkImport}><ListPlus size={17} /></button><button className="icon-button" title="New connection (Ctrl+Shift+N)" aria-label="Create a new connection" onClick={newConnection}><Plus size={18} /></button></div></div>
         <label className="search-field"><Search size={16} /><input placeholder="Search hosts…" aria-label="Search hosts" value={search} onChange={(event) => setSearch(event.target.value)} />{search && <button className="icon-button" aria-label="Clear host search" onClick={() => setSearch('')}><X size={13} /></button>}</label>
         <div className="host-filter-tabs" aria-label="Host filters"><button className={hostFilter === 'all' ? 'active' : ''} aria-pressed={hostFilter === 'all'} onClick={() => setHostFilter('all')}><Server size={14} />All hosts<span>{profiles.length}</span></button><button className={hostFilter === 'favorites' ? 'active' : ''} aria-pressed={hostFilter === 'favorites'} onClick={() => setHostFilter('favorites')}><Star size={14} />Favorites<span>{profiles.filter((profile) => profile.favorite).length}</span></button></div>
         <div className="host-list">
-          {groupedHosts.map((group) => <section className="host-group" key={group.group === null ? 'no-group' : `group:${group.group}`} aria-label={`${group.name} hosts`}><div className="host-group-heading"><Folder size={12} /><span>{group.name}</span><small>{group.hosts.length}</small>{group.group !== null && <button className="icon-button group-run-trigger" aria-label={`Run group command for ${group.name}`} title={`Run a command on ${group.name}`} onClick={() => { setInitialGroupCommand(''); setCommandGroup(group.group) }}><Play size={12} /></button>}</div>{group.hosts.map((profile) => <div className={`host-row-item ${activeTab === 'new' && draft.id === profile.id ? 'is-active' : ''}`} key={profile.id}>
+          {groupedHosts.map((group, groupIndex) => <section className="host-group" key={hostGroupKey(group.group)} aria-label={`${group.name} hosts`}><div className="host-group-heading"><button className="host-group-toggle" aria-label={`${!hostQuery && collapsedGroups.has(hostGroupKey(group.group)) ? 'Expand' : 'Collapse'} ${group.name} hosts`} aria-expanded={!!hostQuery || !collapsedGroups.has(hostGroupKey(group.group))} aria-controls={`host-group-items-${groupIndex}`} disabled={!!hostQuery} title={hostQuery ? 'Groups stay open while searching.' : undefined} onClick={() => toggleHostGroup(group.group)}><ChevronRight size={12} className={hostQuery || !collapsedGroups.has(hostGroupKey(group.group)) ? 'is-expanded' : ''} /><Folder size={12} /><span>{group.name}</span><small>{group.hosts.length}</small></button>{group.group !== null && <button className="icon-button group-run-trigger" aria-label={`Run group command for ${group.name}`} title={`Run a command on ${group.name}`} onClick={() => { setInitialGroupCommand(''); setCommandGroup(group.group) }}><Play size={12} /></button>}</div><div id={`host-group-items-${groupIndex}`} hidden={!hostQuery && collapsedGroups.has(hostGroupKey(group.group))}>{group.hosts.map((profile) => <div className={`host-row-item ${activeTab === 'new' && draft.id === profile.id ? 'is-active' : ''}`} key={profile.id}>
             <button className="host-select" onClick={() => chooseHost(profile)} title={`Connect to ${profile.name}`}><div className="host-avatar"><Server size={17} /></div><div><strong>{profile.name}</strong><span>{profile.username}@{profile.host}</span></div></button>
             <div className="host-actions"><button className={`icon-button ${profile.favorite ? 'is-favorite' : ''}`} aria-label={`${profile.favorite ? 'Unfavorite' : 'Favorite'} ${profile.name}`} aria-pressed={!!profile.favorite} title={profile.favorite ? 'Remove from favorites' : 'Add to favorites'} onClick={() => void toggleFavorite(profile)}><Star size={14} fill={profile.favorite ? 'currentColor' : 'none'} /></button><button className="icon-button" aria-label={`Edit ${profile.name}`} title="Edit host details" onClick={() => chooseHost(profile, false)}><Pencil size={13} /></button><button className="icon-button danger-hover" aria-label={`Delete ${profile.name}`} title="Delete saved host" onClick={() => setDeleteHost(profile)}><Trash2 size={14} /></button></div>
             {quickConnectIds.has(profile.id) && <button className="icon-button host-quick-connect" aria-label={`Quick connect ${profile.name}`} title="Quick connect using the saved password" aria-busy={quickConnecting.has(profile.id)} disabled={quickConnecting.has(profile.id)} onClick={() => void quickConnect(profile)}>{quickConnecting.has(profile.id) ? <LoaderCircle size={14} className="spin" /> : <Zap size={14} />}</button>}
-          </div>)}</section>)}
+          </div>)}</div></section>)}
           {!filtered.length && <div className="empty-hosts"><div className="empty-host-icon">{hostFilter === 'favorites' ? <Star size={25} /> : <Server size={25} />}</div><strong>{search ? 'No matching hosts' : hostFilter === 'favorites' ? 'Keep your go-to hosts close' : 'Your hosts belong here'}</strong><p>{search ? 'Try another name, address, or group.' : hostFilter === 'favorites' ? 'Use the star on a saved host to add it here.' : 'Save a connection to find it here next time.'}</p>{!search && hostFilter === 'all' && <button className="button secondary compact" onClick={newConnection}><Plus size={14} />Add a host</button>}</div>}
         </div>
       </div>
-      <div className="sidebar-bottom"><button className="sidebar-command" onClick={openPalette} aria-label="Quick switcher" title="Quick switcher (Ctrl+K)"><Search size={16} /><span>Quick switcher</span><kbd>Ctrl K</kbd></button><button className="sidebar-command" onClick={openManagement} aria-label="Manage workspace" title="Manage workspace"><Settings2 size={16} /><span>Manage workspace</span></button><button className="sidebar-command" onClick={openMcp} aria-label="MCP server" title="MCP server"><Network size={16} /><span>MCP server</span>{mcpState?.enabled && <span className="status-dot online" aria-label="MCP enabled" />}</button><div className="sidebar-utility-actions"><button className="help-button" onClick={openKeyGenerator} aria-label="Open SSH key generator" title="SSH key generator"><KeyRound size={16} /><span>SSH key generator</span></button><button className="icon-button" onClick={openHelp} title="Help & shortcuts" aria-label="Help & shortcuts"><CircleHelp size={17} /></button></div><div className="sidebar-version"><span><LockKeyhole size={12} />Local workspace</span><span>v0.8.1</span></div></div>
+      <div className="sidebar-bottom"><button className="sidebar-command" onClick={openPalette} aria-label="Quick switcher" title="Quick switcher (Ctrl+K)"><Search size={16} /><span>Quick switcher</span><kbd>Ctrl K</kbd></button><button className="sidebar-command" onClick={openManagement} aria-label="Manage workspace" title="Manage workspace"><Settings2 size={16} /><span>Manage workspace</span></button><div className="sidebar-service-links"><button className="sidebar-command" onClick={openMcp} aria-label="MCP server" title="MCP server"><Network size={16} /><span>MCP server</span>{mcpState?.enabled && <span className="status-dot online" aria-label="MCP enabled" />}</button><button className="sidebar-command updates-shortcut" onClick={openUpdates} aria-label="Updates" title={updateState?.status === 'available' ? `Version ${updateState.version} available · download and install manually` : 'Updates · check for new releases'}><Download size={16} /><span>Updates</span>{updateState?.status === 'available' && <span className="status-dot update-available-dot" aria-label="Update available" />}</button></div><div className="sidebar-utility-actions"><button className="help-button" onClick={openKeyGenerator} aria-label="Open SSH key generator" title="SSH key generator"><KeyRound size={16} /><span>SSH key generator</span></button><button className="icon-button" onClick={openHelp} title="Help & shortcuts" aria-label="Help & shortcuts"><CircleHelp size={17} /></button></div><div className="sidebar-version"><span><LockKeyhole size={12} />Local workspace</span><span>v0.9.0</span></div></div>
     </aside>
     <main className="main-shell">
-      <div className="topbar"><div className="workspace-heading"><button className="icon-button sidebar-toggle" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!sidebarCollapsed} aria-controls="workspace-sidebar" title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={13} /><strong>{active ? active.profile.name : activeTab === 'home' ? 'Home' : activeTab === 'scripts' ? 'Scripts' : activeTab === 'vault' ? 'Vault' : 'Connect'}</strong>{active?.profile.group && <span className="breadcrumb-group">{active.profile.group}</span>}</div></div><div className="topbar-right"><button className={`stream-mode-toggle ${streamMode.enabled ? 'active' : ''}`} aria-label="Stream mode" aria-pressed={streamMode.enabled} title="Stream mode (Ctrl+Shift+S)" onClick={streamMode.toggle}><Radio size={16} /><span>{streamMode.enabled ? 'Stream mode on' : 'Stream mode'}</span></button><span className="topbar-divider" /><button className="icon-button" onClick={openPalette} title="Quick switcher (Ctrl+K)" aria-label="Open quick switcher"><Command size={17} /></button><button className="icon-button" onClick={openWorkspaces} title="Workspaces" aria-label="Workspaces"><Layers size={18} /></button><button className="icon-button appearance-trigger" onClick={openAppearance} title="Appearance" aria-label="Appearance"><Palette size={18} /></button><button className="icon-button header-help" onClick={openHelp} title="Help" aria-label="Open help"><CircleHelp size={18} /></button></div></div>
+      <div className="topbar"><div className="workspace-heading"><div className="navigation-history-controls" role="group" aria-label="Navigation history"><button className="icon-button" aria-label="Go back" title="Go back (Alt+Left)" disabled={navigation.index === 0} onClick={() => moveNavigation(-1)}><ArrowLeft size={16} /></button><button className="icon-button" aria-label="Go forward" title="Go forward (Alt+Right)" disabled={navigation.index === navigation.entries.length - 1} onClick={() => moveNavigation(1)}><ArrowRight size={16} /></button></div><button className="icon-button sidebar-toggle" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!sidebarCollapsed} aria-controls="workspace-sidebar" title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={13} /><strong>{active ? active.profile.name : activeTab === 'home' ? 'Home' : activeTab === 'scripts' ? 'Scripts' : activeTab === 'vault' ? 'Vault' : 'Connect'}</strong>{active?.profile.group && <span className="breadcrumb-group">{active.profile.group}</span>}</div></div><div className="topbar-right"><button className={`stream-mode-toggle ${streamMode.enabled ? 'active' : ''}`} aria-label="Stream mode" aria-pressed={streamMode.enabled} title="Stream mode (Ctrl+Shift+S)" onClick={streamMode.toggle}><Radio size={16} /><span>{streamMode.enabled ? 'Stream mode on' : 'Stream mode'}</span></button><span className="topbar-divider" /><button className="icon-button" onClick={openPalette} title="Quick switcher (Ctrl+K)" aria-label="Open quick switcher"><Command size={17} /></button><button className="icon-button" onClick={openWorkspaces} title="Workspaces" aria-label="Workspaces"><Layers size={18} /></button><button className="icon-button appearance-trigger" onClick={openAppearance} title="Appearance" aria-label="Appearance"><Palette size={18} /></button><button className="icon-button header-help" onClick={openHelp} title="Help" aria-label="Open help"><CircleHelp size={18} /></button></div></div>
       <SessionStrip sessions={sessions} activeId={active?.id} onSelect={selectTerminalSession} onClose={requestCloseSession} onNew={newConnection} />
       {streamMode.enabled && <div className="stream-mode-note" role="status"><Radio size={13} /><span>Stream mode · IP addresses are hidden. Connections and scripts still use the real addresses.</span></div>}
       {availableUpdate && <div className="update-notice"><span>SSH Heaven {availableUpdate.version} is available.</span><button className="button subtle compact" onClick={() => void api.openUpdateDownload().catch(notifyError)}>Update available<ArrowRight size={12} /></button><button className="icon-button" aria-label="Dismiss update notification" onClick={() => { dismissedUpdate.current = availableUpdate.version; setAvailableUpdate(null) }}><X size={13} /></button></div>}
@@ -677,13 +731,13 @@ export function App() {
       <footer className="app-statusbar"><span><ShieldCheck size={13} />{active?.status === 'connected' ? 'Secure connection' : active?.status === 'connecting' ? 'Connecting to server…' : 'Ready to connect'}</span><span>{profiles.length} saved {profiles.length === 1 ? 'host' : 'hosts'}<span className="statusbar-divider">/</span>SSH + SFTP</span></footer>
     </main>
     {toast && <div className={`toast ${toast.kind}`} role={toast.kind === 'error' ? 'alert' : 'status'}>{toast.kind === 'error' ? <ShieldX size={17} /> : <CheckCheck size={17} />}<span>{toast.message}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast(null)}><X size={15} /></button></div>}
-    {paletteOpen && <CommandPalette profiles={profiles} onSelectHost={chooseHost} onNewConnection={newConnection} onHelp={openHelp} onHome={openHome} onGenerateKey={openKeyGenerator} onAppearance={openAppearance} onBulkImport={openBulkImport} onGroupCommand={openGroupCommand} onWorkspaces={openWorkspaces} onManagement={openManagement} onDashboard={openDashboard} onTunnels={openTunnels} onMcp={openMcp} onScripts={openScripts} onVault={openVault} onToggleStreamMode={streamMode.toggle} streamMode={streamMode.enabled} onClose={closePalette} quickConnectIds={quickConnectIds} quickConnecting={quickConnecting} onQuickConnect={quickConnect} />}
+    {paletteOpen && <CommandPalette sessions={sessions} activeSessionId={active?.id} onSelectSession={selectTerminalSession} onUpdates={checkUpdates} profiles={profiles} onSelectHost={chooseHost} onNewConnection={newConnection} onHelp={openHelp} onHome={openHome} onGenerateKey={openKeyGenerator} onAppearance={openAppearance} onBulkImport={openBulkImport} onGroupCommand={openGroupCommand} onWorkspaces={openWorkspaces} onManagement={openManagement} onDashboard={openDashboard} onTunnels={openTunnels} onMcp={openMcp} onScripts={openScripts} onVault={openVault} onToggleStreamMode={streamMode.toggle} streamMode={streamMode.enabled} onClose={closePalette} quickConnectIds={quickConnectIds} quickConnecting={quickConnecting} onQuickConnect={quickConnect} />}
     {keyGeneratorOpen && <KeyGenerator api={api} onClose={closeKeyGenerator} onUseKey={keyGeneratorForVault ? (key) => { void addGeneratedVaultKey(key) } : useGeneratedKey} useKeyLabel={keyGeneratorForVault ? 'Add key to vault' : undefined} useKeyBusy={addingVaultKey} />}
     {appearanceOpen && <Appearance onClose={closeAppearance} />}
     {editing && <RemoteEditor key={`${editing.sessionId}:${editing.path}`} sessionId={editing.sessionId} path={editing.path} api={api} onClose={closeEditor} />}
     {bulkImportOpen && <BulkImport api={api} profiles={profiles} groups={groups} library={library} onImported={refreshImportedHosts} onClose={closeBulkImport} />}
     {commandGroup !== null && <GroupCommand api={api} profiles={profiles} initialGroup={commandGroup} initialCommand={initialGroupCommand} onClose={closeGroupCommand} />}
-    {managementOpen && <ManagementPanel api={api} profiles={profiles} onChanged={refreshImportedHosts} onClose={closeManagement} onRunCommand={(group, command) => { setManagementOpen(false); setInitialGroupCommand(command); setCommandGroup(group) }} />}
+    {managementOpen && <ManagementPanel key={managementStart} initialTab={managementStart} api={api} profiles={profiles} onChanged={refreshImportedHosts} onClose={closeManagement} onRunCommand={(group, command) => { setManagementOpen(false); setInitialGroupCommand(command); setCommandGroup(group) }} />}
     {mcpOpen && <McpPanel api={api} onClose={closeMcp} />}
     {workspacesOpen && <WorkspaceManager api={api} profiles={profiles} library={library} currentProfileIds={[...paneIds.map((id) => sessions.find((session) => session.id === id)?.profile.id).filter((id): id is string => !!id), ...sessions.map((session) => session.profile.id)]} layout={layout} onChanged={refreshLibrary} onRestore={restoreWorkspace} onClose={closeWorkspaces} />}
     {dashboardOpen && <ServerDashboard api={api} sessions={connectedSessions} initialSessionId={active?.status === 'connected' ? active.id : undefined} onClose={closeDashboard} />}
@@ -691,7 +745,7 @@ export function App() {
     {closeTarget && <Modal title="Close this session?" onClose={cancelClose} className="small-modal"><p className="modal-description">Closing <strong>{closeTarget.profile.name}</strong> disconnects the active SSH session.</p><div className="modal-actions"><button className="button secondary" disabled={closing} onClick={cancelClose}>Keep open</button><button className="button danger-button" disabled={closing} onClick={() => void confirmCloseSession()}>{closing ? <LoaderCircle size={15} className="spin" /> : <Unplug size={15} />}Disconnect & close</button></div></Modal>}
     {challenges[0] && <Modal title={challenges[0].previousFingerprint ? 'Server identity has changed' : 'Verify server identity'} onClose={rejectTrust} className="trust-modal"><div className={`trust-icon ${challenges[0].previousFingerprint ? 'warning' : ''}`}>{challenges[0].previousFingerprint ? <ShieldX size={28} /> : <ShieldQuestion size={28} />}</div><p className="modal-description">{challenges[0].previousFingerprint ? 'This server is presenting a different host key than the one you previously trusted. Confirm the new fingerprint with your server administrator before continuing.' : 'This is your first connection to this server. Compare this fingerprint with the one provided by your server administrator.'}</p><div className="fingerprint-card"><span>SERVER</span><strong>{challenges[0].host}:{challenges[0].port}</strong><span>SHA256 FINGERPRINT</span><code>{challenges[0].fingerprint}</code>{challenges[0].previousFingerprint && <><span>PREVIOUS FINGERPRINT</span><code className="previous-fingerprint">{challenges[0].previousFingerprint}</code></>}</div><div className="modal-actions"><button className="button secondary" disabled={trustBusy} onClick={rejectTrust}>Cancel connection</button><button className={`button ${challenges[0].previousFingerprint ? 'danger-button' : 'primary'}`} disabled={trustBusy} onClick={() => void resolveTrust(true)}>{trustBusy ? <LoaderCircle size={15} className="spin" /> : <ShieldCheck size={15} />}{challenges[0].previousFingerprint ? 'Trust new key & connect' : 'Trust & connect'}</button></div></Modal>}
     {deleteHost && <Modal title="Delete saved host?" onClose={closeDelete} className="small-modal"><p className="modal-description">Remove <strong>{deleteHost.name}</strong> from your saved hosts? Existing sessions will stay open.</p><div className="modal-actions"><button className="button secondary" onClick={closeDelete}>Cancel</button><button className="button danger-button" onClick={() => void api.deleteProfile(deleteHost.id).then(() => { setProfiles((current) => current.filter((profile) => profile.id !== deleteHost.id)); void refreshRecentHosts().catch(notifyError); void refreshCredentialStatus().catch(notifyError); setDeleteHost(null) }).catch(notifyError)}><Trash2 size={14} />Delete host</button></div></Modal>}
-    {help && <Modal title="Make yourself at home" onClose={closeHelp} className="help-modal"><div className="help-step"><span>01</span><div><h3>Add a connection</h3><p>Enter your server’s address and username. Connect using a password or a private SSH key.</p></div></div><div className="help-step"><span>02</span><div><h3>Verify your server</h3><p>Check the host-key fingerprint before trusting a new server. We remember trusted keys on this device.</p></div></div><div className="help-step"><span>03</span><div><h3>Work, side by side</h3><p>Use the terminal and remote file browser together. Select a file to download; double-click a folder to open it.</p></div></div><div className="keyboard-hints"><span>Find hosts & actions<kbd>Ctrl K</kbd></span><span>New connection<kbd>Ctrl Shift N</kbd></span><span>Next / previous session<kbd>Ctrl Tab / Ctrl Shift Tab</kbd></span><span>Close active session<kbd>Ctrl W</kbd></span><span>Search terminal output<kbd>Ctrl Shift F</kbd></span><span>Stream mode<kbd>Ctrl Shift S</kbd></span><span>Copy terminal selection<kbd>Ctrl Shift C</kbd></span><span>Paste into terminal<kbd>Ctrl Shift V</kbd></span></div><p className="help-note">Server passwords can be remembered in encrypted storage on this device. Key passphrases are entered each time.</p><button className="button primary full-width" onClick={closeHelp}>Let’s connect<ArrowRight size={15} /></button></Modal>}
+    {help && <Modal title="Make yourself at home" onClose={closeHelp} className="help-modal"><div className="help-step"><span>01</span><div><h3>Add a connection</h3><p>Enter your server’s address and username. Connect using a password or a private SSH key.</p></div></div><div className="help-step"><span>02</span><div><h3>Verify your server</h3><p>Check the host-key fingerprint before trusting a new server. We remember trusted keys on this device.</p></div></div><div className="help-step"><span>03</span><div><h3>Work, side by side</h3><p>Use the terminal and remote file browser together. Select a file to download; double-click a folder to open it.</p></div></div><div className="keyboard-hints"><span>Find hosts & actions<kbd>Ctrl K</kbd></span><span>New connection<kbd>Ctrl Shift N</kbd></span><span>Back / forward<kbd>Alt Left / Alt Right</kbd></span><span>Home / Connect / Scripts / Vault<kbd>Ctrl 1 / 2 / 3 / 4</kbd></span><span>Next / previous session<kbd>Ctrl Tab / Ctrl Shift Tab</kbd></span><span>Close active session<kbd>Ctrl W</kbd></span><span>Search terminal output<kbd>Ctrl Shift F</kbd></span><span>Stream mode<kbd>Ctrl Shift S</kbd></span><span>Copy terminal selection<kbd>Ctrl Shift C</kbd></span><span>Paste into terminal<kbd>Ctrl Shift V</kbd></span></div><p className="help-note">Server passwords can be remembered in encrypted storage on this device. Key passphrases are entered each time.</p><button className="button primary full-width" onClick={closeHelp}>Let’s connect<ArrowRight size={15} /></button></Modal>}
     {mcpState?.pendingApprovals[0] && <McpApprovalDialog api={api} request={mcpState.pendingApprovals[0]} onResolved={onMcpResolved} />}
   </div>
 }

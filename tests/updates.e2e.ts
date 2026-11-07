@@ -21,9 +21,11 @@ const errors: string[] = []
 let popupCount = 0
 async function state() { return page!.evaluate(() => window.sshHeaven.getUpdateState()) }
 async function updatesPanel(): Promise<Locator> {
-  await page!.getByRole('button', { name: 'Manage workspace', exact: true }).click()
+  const before = (await updateProbe(app!)).requests.length
+  await page!.locator('.sidebar').getByRole('button', { name: 'Updates', exact: true }).click()
   const dialog = page!.getByRole('dialog', { name: 'Workspace library', exact: true })
-  await dialog.getByRole('button', { name: 'Updates', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: 'Updates', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  assert.equal((await updateProbe(app!)).requests.length, before, 'Opening update status must not start another check or download')
   return dialog
 }
 
@@ -51,6 +53,8 @@ try {
   assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isVisible())), false)
   await expect.poll(async () => (await updateProbe(app!)).requests.length, { timeout: 15_000 }).toBe(1)
   await expect(page.locator('.update-notice')).toContainText('99.0.0')
+  const shortcut = page.locator('.sidebar').getByRole('button', { name: 'Updates', exact: true })
+  await expect(shortcut.locator('.update-available-dot')).toBeVisible()
   let probe = await updateProbe(app)
   assert.ok(probe.requests[0].at - launchedAt >= 4500, 'The startup check should run after the five-second startup delay')
   assert.equal(probe.requests[0].url, GITHUB_LATEST_API)
@@ -61,6 +65,7 @@ try {
   await page.screenshot({ path: path.join(root, 'test-results', 'updates-available.png') })
   await page.getByRole('button', { name: 'Dismiss update notification', exact: true }).click()
   await expect(page.locator('.update-notice')).toHaveCount(0)
+  await expect(shortcut.locator('.update-available-dot')).toBeVisible()
 
   let dialog = await updatesPanel()
   const check = dialog.getByRole('button', { name: 'Check for updates', exact: true })
@@ -85,6 +90,7 @@ try {
   await expect(dialog.locator('.management-update-message')).toContainText('No newer stable release is available')
   assert.equal((await state()).status, 'not-available')
   await expect(page.locator('.update-notice')).toHaveCount(0)
+  await expect(shortcut.locator('.update-available-dot')).toHaveCount(0)
   await expect(dialog.getByRole('button', { name: 'Open download page', exact: true })).toHaveCount(0)
   const deniedDownload = await page.evaluate(() => window.sshHeaven.openUpdateDownload().then(() => false, () => true))
   assert.equal(deniedDownload, true)

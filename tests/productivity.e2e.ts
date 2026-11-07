@@ -105,6 +105,7 @@ try {
 
   await page.getByTitle('Connect to Productivity fixture', { exact: true }).click()
   await page.getByLabel('Username', { exact: true }).fill('different-user')
+  await expect(page.getByLabel('Username', { exact: true })).toHaveValue('different-user')
   await expect(page.getByRole('checkbox', { name: 'Use saved password', exact: true })).toHaveCount(0)
   await page.getByLabel('Username', { exact: true }).fill(fixture.username)
   await expect(page.getByRole('checkbox', { name: 'Use saved password', exact: true })).toBeVisible()

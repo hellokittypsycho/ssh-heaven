@@ -17,11 +17,22 @@ Local development runs skip release initialization and make no update requests. 
 For custom hosting, set `provider` to `manifest` in the build configuration. The JSON manifest contains only a stable semantic version:
 
 ```json
-{ "version": "0.8.1" }
+{ "version": "0.9.0" }
 ```
 
 Installed builds check once about five seconds after startup and when the user chooses **Check for updates**. No host inventory, credentials, or personal settings are sent. HTTPS requests have an eight-second timeout, a 64 KiB response limit, and do not follow redirects. Download links are fixed in the application build, not accepted from a remote response. Offline and GitHub rate-limit failures appear in Updates and can be retried manually. A dismissed version stays hidden for the current app run; a later version can show a new notice. Local development runs remain unconfigured. To disable notifications in a custom distribution, set `enabled` to `false` in its tracked release configuration before packaging.
 
 Keep the app ID and product name stable across releases so the manually launched NSIS installer recognizes the existing app. Test an installed-version upgrade on a separate machine before public rollout. Unsigned Windows preview installers are published on [GitHub Releases](https://github.com/hellokittypsycho/ssh-heaven/releases/latest), with a SHA-256 checksum file. Update suggestions are enabled; a signing certificate remains unconfigured. macOS and Linux require their own distribution validation.
+
+## Verify suggestions in the previous release
+
+Preserve the entire packaged `win-unpacked` directory from 0.8.1 before building over it. After publishing the new stable release and marking it latest, run:
+
+```powershell
+$env:SSH_HEAVEN_BASELINE_EXECUTABLE = 'C:\QA\ssh-heaven-0.8.1\SSH Heaven.exe'
+npm run test:release-suggestion
+```
+
+This separate check starts the real 0.8.1 app with isolated temporary settings and a hidden offscreen window. Its startup request reads the live GitHub response and must offer the version in the current repository's `package.json`. The test records the browser-open request after a click; it does not open the user's browser, download an installer, or install anything. Keep it separate from `test:packaged`, which runs before publishing and uses controlled update responses.
 
 References: [GitHub latest release API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release), [electron-builder Windows signing](https://www.electron.build/code-signing-win.html). Consult documentation matching the pinned builder version before upgrading release tooling.

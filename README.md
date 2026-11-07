@@ -65,6 +65,10 @@ For individual connections, passwords are saved only when **Remember password on
 
 Use the sidebar for **Home**, **Connect**, **Scripts**, and **Vault**. **Connect** returns to your unfinished connection form; the **+** buttons or **Ctrl+Shift+N** start a fresh connection. The header's sidebar button switches between the host library and a compact icon rail, and remembers your choice on this device.
 
+Use the header's **Back/Forward** buttons or **Alt+Left/Right** to revisit pages and terminals without reconnecting. Closed sessions are removed from navigation history. **Ctrl+1/2/3/4** jump to Home, Connect, Scripts, and Vault. Collapse individual host groups to keep a large library manageable; search temporarily shows matching hosts inside collapsed groups, and clearing search restores your choice.
+
+**Ctrl+K** now searches open SSH sessions, saved hosts, and actions in one place. Open sessions appear first; the **Sessions**, **Hosts**, and **Actions** filters narrow the results. Choosing an open session reuses its terminal and history. The sidebar's **Updates** entry opens release status directly and keeps an indicator while a newer version is available, even after dismissing its banner.
+
 Open SSH sessions appear in a separate strip. Tabs keep their width as more servers open; scroll with the arrow controls or choose **All sessions** to search by nickname, host, user, group, or status. Selecting a session brings its tab into view. **Ctrl+Tab / Ctrl+Shift+Tab** cycle through SSH sessions. With a tab focused, use **Left/Right**, **Home/End**, or **Delete** to navigate or close it. Switching pages keeps terminal history and connection/script drafts available.
 
 ## Vault, stream mode, and scripts
@@ -129,6 +133,8 @@ Uploads and downloads stream to temporary files and replace the destination only
 | Ctrl+K | Find hosts and actions |
 | Ctrl+Shift+N | New connection |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous session |
+| Alt+Left / Alt+Right | Back / forward through visited pages and sessions |
+| Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4 | Home / Connect / Scripts / Vault |
 | Ctrl+W | Close session (confirms an active connection) |
 | Ctrl+Shift+F | Find in active terminal |
 | Ctrl+Shift+C / Ctrl+Shift+V | Copy terminal selection / paste |
