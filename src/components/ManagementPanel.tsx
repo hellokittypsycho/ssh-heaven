@@ -54,9 +54,10 @@ export function ManagementPanel({ api, profiles, onChanged, onClose, onRunComman
   const close = useCallback(() => { if (!busyRef.current) onClose() }, [onClose])
   useEffect(() => {
     let mounted = true
+    let receivedUpdate = false
     void api.getLibrary().then((value) => { if (mounted) setLibrary(value) }).catch((cause) => { if (mounted) setError(errorMessage(cause)) }).finally(() => { if (mounted) setLoading(false) })
-    void api.getUpdateState().then((state) => { if (mounted) setUpdate(state) }).catch(() => {})
-    const stop = api.onUpdate((state) => { if (mounted) setUpdate(state) })
+    const stop = api.onUpdate((state) => { receivedUpdate = true; if (mounted) setUpdate(state) })
+    void api.getUpdateState().then((state) => { if (mounted && !receivedUpdate) setUpdate(state) }).catch(() => {})
     return () => { mounted = false; stop() }
   }, [api])
   async function act(action: () => Promise<void>) {

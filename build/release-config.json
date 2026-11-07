@@ -1,5 +1,6 @@
 {
-  "enabled": false,
-  "manifestUrl": "",
-  "downloadUrl": ""
+  "enabled": true,
+  "provider": "github",
+  "manifestUrl": "https://api.github.com/repos/hellokittypsycho/ssh-heaven/releases/latest",
+  "downloadUrl": "https://github.com/hellokittypsycho/ssh-heaven/releases/latest"
 }

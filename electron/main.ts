@@ -375,7 +375,8 @@ app.whenReady().then(async () => {
   tunnels = new TunnelManager(service, (id, event) => send(id, channels.tunnel, event))
   backups = new BackupService(store, vault, path.join(app.getPath('userData'), 'backup-keys'), keyAllowed)
   updates = new UpdateService(app.getVersion(), (event) => { if (mainWindow && !mainWindow.isDestroyed()) send(mainWindow.webContents.id, channels.update, event) }, (url) => shell.openExternal(url))
-  await updates.initialize(path.join(app.getAppPath(), 'build', 'release-config.json'))
+  // Release checks use only public metadata. Local development stays offline.
+  if (app.isPackaged) await updates.initialize(path.join(app.getAppPath(), 'build', 'release-config.json'))
   mcp = new McpService({
     store, ssh: service, metrics, editor, version: app.getVersion(),
     connectionFile: path.join(app.getPath('userData'), 'mcp-connection.json'),

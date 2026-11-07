@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { _electron, expect, type ElectronApplication, type Locator, type Page } from '@playwright/test'
 import { startFixture } from './fixture'
 import type { GroupCommandEvent } from '../shared/types'
+import { GITHUB_LATEST_API, installUpdateFixture, updateProbe } from './update-fixture'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const require = createRequire(import.meta.url)
@@ -23,11 +24,14 @@ let app: ElectronApplication | undefined
 async function launch(directory: string): Promise<Page> {
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
   delete env.ELECTRON_RUN_AS_NODE
+  env.SSH_HEAVEN_BACKGROUND_TEST = '1'
   const executable = process.env.SSH_HEAVEN_EXECUTABLE
   app = await _electron.launch({ executablePath: executable || require('electron') as string, args: [...(executable ? [] : [root]), `--user-data-dir=${directory}`], env, timeout: 30_000 })
+  await installUpdateFixture(app)
   const page = await app.firstWindow()
   page.on('pageerror', (error) => rendererErrors.push(error.message))
   await expect(page.getByRole('button', { name: 'Manage workspace', exact: true })).toBeVisible()
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isVisible())), false)
   await page.evaluate(() => {
     const target = window as unknown as { managementEvents: GroupCommandEvent[] }
     target.managementEvents = []
@@ -170,11 +174,21 @@ try {
   await runSavedRunbook(page, dialog, 'restored-vault-e2e-marker', false)
   dialog = await management(page)
   await dialog.getByRole('button', { name: 'Updates', exact: true }).click()
-  assert.equal((await page.evaluate(() => window.sshHeaven.getUpdateState())).status, 'unconfigured')
-  await expect(dialog.getByText(/Release hosting has not been configured/)).toBeVisible()
+  const updateFixture = await updateProbe(app!)
+  if (updateFixture.packaged) {
+    await dialog.getByRole('button', { name: 'Check for updates', exact: true }).click()
+    await expect(dialog.locator('.management-update-message')).toContainText('No newer stable release is available')
+    assert.equal((await page.evaluate(() => window.sshHeaven.getUpdateState())).status, 'not-available')
+    assert.ok((await updateProbe(app!)).requests.every((request) => request.url === GITHUB_LATEST_API))
+    assert.deepEqual((await updateProbe(app!)).opened, [])
+  } else {
+    assert.equal((await page.evaluate(() => window.sshHeaven.getUpdateState())).status, 'unconfigured')
+    await expect(dialog.getByText(/Release hosting has not been configured/)).toBeVisible()
+    assert.deepEqual(updateFixture.requests, [])
+  }
   await expect(dialog.getByRole('button', { name: /Install|Download update|Restart/i })).toHaveCount(0)
   assert.deepEqual(rendererErrors, [], `Renderer errors: ${rendererErrors.join(', ')}`)
-  console.log('Management E2E passed: named keys, group defaults and explicit bulk application, quoted runbook review/execution, encrypted portable backup, dry preview, non-destructive merge, restored vault/key files/preferences, and manual-only unconfigured update UI.')
+  console.log('Management E2E passed: named keys, group defaults and explicit bulk application, quoted runbook execution, encrypted portable backup and merge, restored vault/key files/preferences, and deterministic manual-only update UI in packaged/dev builds.')
 } catch (error) {
   if (app) {
     const page = await app.firstWindow().catch(() => undefined)

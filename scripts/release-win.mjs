@@ -29,7 +29,8 @@ async function run(script, args) {
   if (code !== 0) throw new Error(`Release build exited with status ${code}.`)
 }
 try {
-  await writeFile(configFile, JSON.stringify({ enabled: !!feed, manifestUrl: feed ? secureUrl(feed) : '', downloadUrl: download ? secureUrl(download) : '' }, null, 2))
+  // Keep the tracked GitHub provider unless a custom version manifest is supplied.
+  if (feed) await writeFile(configFile, JSON.stringify({ enabled: true, provider: 'manifest', manifestUrl: secureUrl(feed), downloadUrl: secureUrl(download) }, null, 2))
   const config = { ...pkg.build, forceCodeSigning: true,
     win: { ...pkg.build.win, signExecutable: true,
       signtoolOptions: { publisherName: publisher, signingHashAlgorithms: ['sha256'], ...(certificateSubject ? { certificateSubjectName: certificateSubject } : {}) } } }
@@ -38,7 +39,7 @@ try {
   await run(path.join(root, 'scripts/build-mcp.mjs'), [])
   await run(path.join(root, 'node_modules/electron-vite/bin/electron-vite.js'), ['build'])
   await run(path.join(root, 'node_modules/electron-builder/cli.js'), ['--config', builderConfig, '--win', 'nsis', '--publish', 'never'])
-  await writeFile(path.join(root, 'release', 'version.json'), JSON.stringify({ version: pkg.version }, null, 2))
+  if (feed) await writeFile(path.join(root, 'release', 'version.json'), JSON.stringify({ version: pkg.version }, null, 2))
 } finally {
   await writeFile(configFile, original)
   // This is only the absolute directory returned by mkdtemp above.

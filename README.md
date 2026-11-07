@@ -48,6 +48,7 @@ npm start
 - Saved local/remote SSH forwarding rules and jump-host routes with verification for every hop.
 - Optional reconnect with bounded backoff and opt-in `tmux` sessions for persistent remote shells.
 - Optional local MCP server for external AI clients, with copyable client configuration and in-app review for commands and file edits.
+- Update suggestions from GitHub Releases at startup, plus **Check for updates** in the workspace library. Opening the release page, downloading, and installation require user actions.
 - Search terminal output with match highlighting, case matching, and next/previous results; adjust and remember terminal font size.
 - Explicit server fingerprint verification, with remembered fingerprints and a warning when a key changes.
 - Resizable SFTP browser with folder history, breadcrumbs, file filtering, sorting, hidden files, and multi-selection.
@@ -115,7 +116,7 @@ Upload a folder using the folder button, or drop files/folders from Explorer ont
 
 Backup exports encrypt profiles, library items, workspaces, and selected UI preferences using AES-256-GCM with a scrypt-derived key. Remembered passwords and private key contents are optional. Use a passphrase of at least 12 characters; it is never saved. Restoring first decrypts and validates a preview, then merges new hosts/library items while preserving existing hosts and credentials. Included private keys are restored to new managed paths with restricted file permissions. Metadata-only backups keep key paths, so missing keys must be relinked on another machine. Restore previews expire after ten minutes. Backups are limited to 32 MiB and cannot recover a forgotten backup passphrase.
 
-Updates are **notifications only**: a configured build checks a small version manifest and offers a link to its download page. Downloading and installing always stay manual. This preview has no release host or signing certificate configured; see [RELEASE.md](RELEASE.md) for the prepared signing and notification setup.
+Updates are **notifications only**: installed builds check this repository's latest stable GitHub Release shortly after startup, or when you choose **Manage workspace → Updates → Check for updates**. A newer version displays a notice linking to the fixed GitHub release page. The app never downloads an installer, installs an update, or restarts automatically. Version 0.8.0 and earlier need one manual upgrade to 0.8.1 or later before suggestions work. Local development runs make no update requests. Installers remain unsigned; see [RELEASE.md](RELEASE.md) for signing and release setup.
 
 Open **MCP server** in the sidebar to connect an external AI assistant to SSH Heaven. Read tools use existing SSH sessions; command and file-edit tools require an explicit in-app review. MCP starts disabled and runs only on loopback. See [MCP.md](MCP.md) for setup and access details.
 
@@ -171,9 +172,9 @@ On Windows, the Scripts end-to-end fixture also uses Git for Windows' Bash to ex
 npm run dist:win
 ```
 
-The NSIS installer and unpacked application are generated in `release/`. Development installers are unsigned. Signing and optional update notifications have a separate prepared release setup; see [RELEASE.md](RELEASE.md). Installation always stays manual.
+The NSIS installer and unpacked application are generated in `release/`. Preview installers are unsigned and include GitHub update suggestions. Signing and custom release hosting have a separate prepared setup; see [RELEASE.md](RELEASE.md). Installation always stays manual.
 
-Run `npm run test:packaged` after packaging to run all eighteen automated end-to-end suites against the actual Windows executable, including SSH/SFTP, themes/wallpapers, credentials/PIN management, scripts, stream masking/paste, input timing, navigation with ten real SSH sessions, and existing workspace tools. The separate `npm run test:drag` harness requires real native window drags and header/control clicks; renderer-generated mouse events do not prove operating-system window movement.
+Run `npm run test:packaged` after packaging to run all nineteen automated end-to-end suites against the actual Windows executable, including SSH/SFTP, themes/wallpapers, credentials/PIN management, scripts, stream masking/paste, input timing, navigation with ten real SSH sessions, GitHub update suggestions, and existing workspace tools. `npm run test:updates` runs the update-notice suite alone against `release/win-unpacked/SSH Heaven.exe`; it requires a current packaged build because development runs intentionally disable release checks. The separate `npm run test:drag` harness requires real native window drags and header/control clicks; renderer-generated mouse events do not prove operating-system window movement.
 
 For background-only testing, set `$env:SSH_HEAVEN_BACKGROUND_TEST = '1'` before running a suite. The test app renders offscreen without showing or focusing a window; keyboard/pointer events stay inside its isolated renderer. In this mode native maximize, focus, caption-overlay, and physical-drag checks are skipped, and large layout tests use a resized offscreen viewport.
 
