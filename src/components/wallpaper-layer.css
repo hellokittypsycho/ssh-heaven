@@ -1,0 +1,1 @@
+.wallpaper-layer{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none;user-select:none;background:var(--bg)}.wallpaper-layer>img{position:absolute;display:block;max-width:none;pointer-events:none;-webkit-user-drag:none}

@@ -1,0 +1,20 @@
+.modal.server-dashboard { width:840px; }
+.dashboard-toolbar { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
+.dashboard-toolbar .field-label { flex:1; margin:0; }
+.dashboard-toolbar select { width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:9px; background:var(--input); color:var(--text); outline:none; font-size:12px; }
+.dashboard-toolbar>.icon-button { margin-top:20px; }
+.dashboard-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+.dashboard-cards section { padding:20px; border:1px solid var(--border); border-radius:13px; background:var(--input); min-width:0; }
+.dashboard-cards h3 { display:flex; align-items:center; gap:7px; color:var(--text-secondary); font-size:12px; font-weight:500; margin-bottom:20px; }
+.dashboard-cards output { color:var(--text); font-size:27px; font-weight:550; letter-spacing:-.8px; }
+.dashboard-cards progress { display:block; width:100%; height:4px; margin:17px 0 10px; overflow:hidden; border:0; border-radius:4px; }
+.dashboard-cards progress::-webkit-progress-bar { background:var(--surface-raised); }
+.dashboard-cards progress::-webkit-progress-value { background:var(--accent); }
+.dashboard-cards p { color:var(--text-muted); font-size:10px; line-height:1.7; margin-top:8px; }
+.dashboard-details { display:flex; flex-direction:column; gap:17px; padding:20px; margin:20px 0; border:1px solid var(--border); border-radius:12px; }
+.dashboard-details>div { display:flex; justify-content:space-between; align-items:center; gap:14px; font-size:12px; }
+.dashboard-details dt { display:flex; align-items:center; gap:7px; color:var(--text-muted); }
+.dashboard-details dd { color:var(--text-secondary); margin:0; text-align:right; overflow-wrap:anywhere; }
+.dashboard-note { color:var(--text-muted); font-size:11px; line-height:1.8; }
+.dashboard-empty { display:flex; align-items:center; justify-content:center; flex-direction:column; gap:17px; min-height:180px; color:var(--text-muted); font-size:12px; }
+@media(max-width:700px) { .dashboard-cards { grid-template-columns:1fr; } }

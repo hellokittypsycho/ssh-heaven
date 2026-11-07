@@ -1,0 +1,76 @@
+.window-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 11px;
+  background: var(--bg);
+}
+.window-frame::after { content: ''; position: absolute; inset: 0; z-index: 200; border: 1px solid var(--border-strong); border-radius: inherit; pointer-events: none; transition: border-color .16s; }
+.window-frame[data-focused="false"]::after { border-color: var(--border); }
+.window-frame[data-maximized="true"],
+.window-frame[data-fullscreen="true"] { border: 0; border-radius: 0; }
+.window-frame[data-maximized="true"]::after,
+.window-frame[data-fullscreen="true"]::after { display: none; }
+
+.window-content {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.window-titlebar {
+  position: relative;
+  z-index: 10;
+  flex: 0 0 38px;
+  height: 38px;
+  min-height: 38px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-secondary);
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.window-titlebar-content {
+  position: absolute;
+  left: env(titlebar-area-x, 0px);
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: env(titlebar-area-width, calc(100% - 138px));
+  height: 100%;
+  padding: 0 14px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.window-titlebar-icon { color: var(--accent); }
+.window-titlebar-name { font-size: 11px; font-weight: 500; letter-spacing: .05px; white-space: nowrap; }
+.window-titlebar-theme { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--text-muted); font-size: 10px; white-space: nowrap; }
+.window-titlebar-theme>span { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); opacity: .75; }
+.window-frame[data-focused="false"] .window-titlebar-content { opacity: .65; }
+
+.window-frame[data-platform="darwin"] .window-titlebar-content { left: 0; width: 100%; padding-left: 82px; padding-right: 17px; }
+.window-frame[data-fullscreen="true"] .window-titlebar { display: none; }
+
+/* Future title-bar actions must never become draggable. Native caption buttons stay native. */
+.window-titlebar button,
+.window-titlebar input,
+.window-titlebar a,
+.window-titlebar [role="button"] { -webkit-app-region: no-drag; app-region: no-drag; pointer-events: auto; }
+
+@media (prefers-reduced-motion: reduce) { .window-frame::after { transition: none; } }

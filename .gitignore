@@ -1,0 +1,33 @@
+# Dependencies and generated builds
+/node_modules/
+/out/
+/release/
+/build/mcp/
+
+# Test reports and tool caches
+/test-results/
+/playwright-report/
+/playwright/.cache/
+/coverage/
+.cache/
+.vite/
+*.tsbuildinfo
+*.log
+
+# Local configuration and device-specific credentials
+.env
+.env.*
+!.env.example
+/user-data/
+/.user-data/
+/settings.json
+/credentials.json
+/vault-lock.json
+/mcp-connection.json
+*.pfx
+*.p12
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini

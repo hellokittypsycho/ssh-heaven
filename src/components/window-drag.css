@@ -1,0 +1,23 @@
+/* Native caption regions extend through the workspace's empty header space.
+   Do not put a no-drag rectangle over their entire .window-content ancestor. */
+.window-titlebar,
+.app-shell .topbar,
+.app-shell .tabbar,
+.app-shell .sidebar > .brand {
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Tabs and controls retain their normal mouse, keyboard and selection behavior. */
+:is(.window-titlebar, .topbar, .tabbar, .sidebar > .brand) :is(button, a, input, select, textarea, [role="button"], [role="tab"], [contenteditable="true"], .session-tab) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Dialogs cover header regions too; they must not become invisible drag zones. */
+.modal-backdrop {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

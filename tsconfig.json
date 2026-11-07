@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "@ssh-heaven/privacy-jsx",
+    "paths": { "@ssh-heaven/privacy-jsx/*": ["./src/privacy-jsx/*"] },
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "types": ["node", "vite/client"]
+  },
+  "include": ["electron/**/*.ts", "shared/**/*.ts", "src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "electron.vite.config.ts"]
+}

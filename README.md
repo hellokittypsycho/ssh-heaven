@@ -1,0 +1,184 @@
+# SSH Heaven
+
+A Windows-first desktop SSH terminal and SFTP workspace built with TypeScript, Electron, React, xterm.js, and ssh2.
+
+## Run locally
+
+Install Node.js 24 LTS, then run:
+
+```powershell
+npm ci
+npm run dev
+```
+
+Electron's desktop runtime downloads during installation. No running web server or account is needed for the installed application.
+
+To run the production build:
+
+```powershell
+npm run build
+npm start
+```
+
+## Features
+
+- Modern workspace with eight persistent color presets: Graphite, Midnight, Ocean, Forest, Amethyst, Ember, Pink, and Daylight. Open **Appearance** using the palette icon or quick switcher. The UI, terminal, native light/dark appearance, and editor update live.
+- Custom image or animated GIF wallpaper, with strength, blur, cover/contain, and animation controls in **Appearance**. Backgrounds are copied to this device's application data so moving the source file keeps your wallpaper. GIFs use a still frame when animation is disabled or the system requests reduced motion.
+- Custom themed title bar and window border, with native Windows caption controls, dragging from the title bar and empty workspace header/tab areas, resizing, and maximize behavior.
+- Home screen with recently accessed hosts, connection timestamps, and clearable local history.
+- Give hosts memorable nicknames, and edit them from Home or the host library.
+- Saved host profiles with groups, favorites, search, editing, and removal.
+- Bulk host import with a masked preview, duplicate detection, optional group, encrypted passwords, or one shared SSH key.
+- Reviewed commands across a named group, with separate per-server output, exit status, timeouts, and cancellation.
+- Keyboard command palette for finding hosts and actions, plus session switching and guarded session closing.
+- Password and private key authentication, including encrypted-key passphrases.
+- Optional remembered server passwords protected by OS encryption, with a Forget action. SSH connections reuse passwords in the main process; explicit password reveals are available only inside the unlocked vault manager.
+- Vault manager for server passwords and named SSH keys, available after setting a five-digit PIN. Quick connect remains available while management is locked.
+- One-click **Quick connect** for hosts with saved passwords from the host sidebar, recent hosts, or quick switcher. Failed saved passwords reopen the connection form for correction; successful connections preserve your unfinished form draft.
+- Multiple SSH terminal sessions with resizing, ANSI colors, scrollback, and copy/paste.
+- Responsive terminal input with immediate server-driven echo and bounded output batching, plus exactly-once keyboard/native paste handling.
+- Stream mode masks recognized IPv4/IPv6 addresses in terminal output/history, app labels and editors. Toggle it from the header or with **Ctrl+Shift+S**.
+- Scripts tab with a searchable saved library, shell syntax highlighting, draft preservation, connected-terminal selection, and reviewed one-time execution in the visible terminal.
+- Tabs, two-pane splits, and four-pane grids with pane reordering, plus named saved workspaces and explicit connection on restore.
+- Workspace library for named SSH keys, group defaults, reusable commands with quoted variables, and encrypted portable backups.
+- Linux server dashboard for CPU, memory, root filesystem usage, uptime, and OS details over an existing SSH session.
+- Saved local/remote SSH forwarding rules and jump-host routes with verification for every hop.
+- Optional reconnect with bounded backoff and opt-in `tmux` sessions for persistent remote shells.
+- Optional local MCP server for external AI clients, with copyable client configuration and in-app review for commands and file edits.
+- Search terminal output with match highlighting, case matching, and next/previous results; adjust and remember terminal font size.
+- Explicit server fingerprint verification, with remembered fingerprints and a warning when a key changes.
+- Resizable SFTP browser with folder history, breadcrumbs, file filtering, sorting, hidden files, and multi-selection.
+- Upload/download queues with byte progress, transfer history, and cancellation; download several selected files to one folder.
+- Recursive folder upload/download, file/folder drops from Explorer, and retry actions for failed or canceled transfers.
+- Folder creation, renaming, and confirmed deletion of files or empty folders.
+- Native file dialogs and overwrite confirmation for transfers.
+- Local SSH key generation: Ed25519 or RSA 3072-bit, optional passphrase protection, public-key fingerprint/copy, and use the generated key in a connection.
+- Built-in remote text editor: syntax highlighting, line numbers/folding, language selection, find/replace, Ctrl+S, unsaved-change confirmation, and server-change conflict checks. Double-click a file or select it and click Edit.
+
+For individual connections, passwords are saved only when **Remember password on this device** is selected and authentication succeeds. Bulk import explicitly saves the supplied passwords without connecting to the servers. The separate credential vault uses Electron's OS-backed encryption (Windows DPAPI); plaintext passwords are never written to host profiles. Connection APIs expose availability and profile IDs only; the PIN-gated manager can explicitly reveal one selected password. Saved credentials are tied to a specific host, port, username, and authentication type and are invalidated when that identity changes or the profile is deleted. Linux plaintext `basic_text` storage is disabled. Key passphrases remain in memory and are not saved. Private keys stay in the files you select. Verify a new server fingerprint against a trusted source before accepting it.
+
+## Vault, stream mode, and scripts
+
+Open **Vault** and enable a five-digit PIN before managing passwords or SSH keys. The manager supports revealing, copying, replacing, setting, or forgetting a server password, plus naming, importing, generating, and removing SSH key entries. Removing an entry leaves the private key file in place. Revealed passwords hide after 30 seconds; native password copies clear after 30 seconds if the clipboard still contains that same value. Stream mode disables password reveals. Management locks after five minutes, on minimize, or when leaving the Vault tab; quick connect and existing sessions continue. PIN verifiers and failed-attempt counters are protected by OS encryption, with persistent escalating lockouts. This device's PIN is separate from portable backup passphrases and is not exported.
+
+**Stream mode** changes display only. Recognized IPv4 and IPv6 addresses are replaced with equal-width bullets in labels, tooltips, terminal output/scrollback, and code editors. Terminal selections/copies and editor clipboard output are sanitized. Sensitive text fields hide their glyphs, while native form values, connection endpoints, saved scripts, and transmitted commands keep their real contents. The terminal parses ANSI/cursor updates before masking, including wrapped addresses and alternate-screen applications. It does not identify arbitrary secrets or mask text inside wallpaper images.
+
+Open **Scripts** to create or edit a shell script, save it, choose a connected terminal, and click **Run script** to review its target and contents. Confirmed scripts run once with `sh` in that terminal; their output and interactive input stay in the same session. Start at an idle shell prompt. Scripts execute in a child shell, so `exit`, shell options, and directory changes stay inside that script. Literal tabs, Unicode, quotes, and trailing newlines are retained; scripts support up to 32,768 characters and share the existing runbook library/backups. Runbook `{{variables}}` remain literal in the Scripts tab. A successful submission means the script was sent, rather than that its remote commands completed.
+
+## Bulk import and group commands
+
+Open **Bulk import hosts** from the sidebar or quick switcher. Paste one host per line:
+
+```text
+192.0.2.10:user:password
+198.51.100.20:password
+```
+
+The two-field format uses `root`. Set the SSH port once for the batch and optionally choose a group. Passwords containing colons require an explicit username, for example `192.0.2.10:root:pass:with:colons`. Blank lines and lines beginning with `#` are ignored. Hostnames and bracketed IPv6 addresses are supported. Preview shows validation errors without displaying passwords; existing host/port/username combinations and repeated rows are skipped. Each import supports up to 200 hosts and does not replace existing credentials.
+
+Choose **One SSH key for all** to select a local private key for the whole batch. In this mode, use `host` (default user `root`) or `host:username`; any passwords in three-field rows are discarded. The app stores the key's path, not a copy of the private key.
+
+Click the play button beside a named group, or open **Run group command** from the quick switcher. Review the command and target list, then start the run. The runner uses the saved credentials or key for each host and asks for any new server fingerprints. It opens separate SSH execution channels, runs up to four hosts concurrently, and leaves interactive terminal sessions available. Each host has its own output and result; the default timeout is five minutes per host. The reviewed target list stays fixed for that run. Cancellation closes SSH channels and skips queued hosts, but remote processes that already started may continue.
+
+The editor accepts regular UTF-8 text files up to 2 MiB. It preserves a UTF-8 BOM and uniform line endings; mixed line endings normalize to LF with a footer indication. Saves use a temporary sibling and check content hashes before and after writing it. A detected remote change preserves the draft and requires reloading before saving. SFTP does not provide an atomic compare-and-swap operation, so edits made by another writer in the final rename interval cannot be locked out.
+
+Recent history records successful connections, including connections you do not add to the host library. It contains host metadata and timestamps only and can be cleared from Home.
+
+Generated private keys are written directly by the main process; their contents never enter the interface. Existing private/public key files are never overwritten. Private files use mode `0600` on Unix and an ACL restricted to the current Windows account. Generation runs in a worker so other sessions stay responsive. Keep a copy of the private key in a safe location; passphrases cannot be recovered by the app.
+
+File transfers use **SFTP over SSH**. FTP/FTPS, SSH agent authentication, and cloud sync are outside this preview.
+
+## Workspaces, library, and server tools
+
+Use the terminal toolbar to switch between tabs, a two-pane split, and a four-pane grid. Click a pane to activate it and use its arrow controls to change its position. Terminal contents and connections stay mounted when changing layouts. **Workspaces** saves a named selection of up to 20 saved hosts and the layout. **Restore layout** creates disconnected placeholders; **Connect workspace** starts the selected hosts using saved passwords or key files. Hosts that need credentials open the connection form. Workspaces do not store terminal contents or passwords.
+
+Open **Manage workspace** for runbooks, named SSH keys, group defaults, backups, and update status. Runbook variables use `{{name}}` outside shell quotes and are inserted as quoted POSIX shell arguments. Heredoc substitutions are unsupported. Using a runbook opens the existing command-and-target review before any command runs. Group defaults provide a username, port, and optional named key for new connections; bulk import has an explicit **Apply group defaults** action. Password-list import still uses `root` for the documented two-field format.
+
+The **Server dashboard** reads Linux `/proc`, OS-release information, and `df` through a bounded SSH execution channel. It refreshes every five seconds while visible and requires no additional remote service. Unsupported operating systems or missing tools show a clear error without disconnecting the shell.
+
+**SSH tunnels** starts local or remote forwarding on a connected host, with saved rules and a Stop action. The app requests loopback listeners (`127.0.0.1`); remote forwarding also depends on the SSH server's forwarding policy. Listeners and forwarded connections close when their SSH session disconnects. Jump hosts are selected from saved profiles, support chains of up to four hops, and verify each hop's fingerprint. Password-based hops need a remembered password. Key-based hops can use an unencrypted private key, or the same key file and runtime passphrase as the destination; separate encrypted hop-key passphrases are not yet prompted for by this preview.
+
+Automatic reconnect is opt-in per host. After a previously connected session drops, it tries saved credentials with delays of 2, 4, 8, 16, and 30 seconds. Manual disconnect, close, missing credentials, and authentication or host-verification failures stop retries. Input and previous commands are never replayed. Enable a named `tmux` session in host options to attach or create it on the remote server; `tmux` must already be installed. A plain SSH shell does not preserve remote process state across reconnection.
+
+## Folder transfers and portable backups
+
+Upload a folder using the folder button, or drop files/folders from Explorer onto the remote browser. Select remote folders and choose Download to copy them recursively, including empty folders. Each folder is one queue job with aggregate byte progress. Transfers support up to 10,000 entries and 32 nested directory levels per folder. Symbolic links and special files are rejected during preflight rather than followed. Unsafe Windows filenames and colliding names are rejected for downloads. Files are still committed individually through temporary siblings: canceling a folder preserves files already completed and removes the active file's temporary sibling where cleanup succeeds. Retry starts the selected job again and asks before replacing existing files; byte-level resume is not implemented.
+
+Backup exports encrypt profiles, library items, workspaces, and selected UI preferences using AES-256-GCM with a scrypt-derived key. Remembered passwords and private key contents are optional. Use a passphrase of at least 12 characters; it is never saved. Restoring first decrypts and validates a preview, then merges new hosts/library items while preserving existing hosts and credentials. Included private keys are restored to new managed paths with restricted file permissions. Metadata-only backups keep key paths, so missing keys must be relinked on another machine. Restore previews expire after ten minutes. Backups are limited to 32 MiB and cannot recover a forgotten backup passphrase.
+
+Updates are **notifications only**: a configured build checks a small version manifest and offers a link to its download page. Downloading and installing always stay manual. This preview has no release host or signing certificate configured; see [RELEASE.md](RELEASE.md) for the prepared signing and notification setup.
+
+Open **MCP server** in the sidebar to connect an external AI assistant to SSH Heaven. Read tools use existing SSH sessions; command and file-edit tools require an explicit in-app review. MCP starts disabled and runs only on loopback. See [MCP.md](MCP.md) for setup and access details.
+
+Uploads and downloads stream to temporary files and replace the destination only after successful completion. Cancellation preserves an existing destination and keeps the SSH connection available. Servers that cannot safely rename an upload over an existing file report a replacement error. If a connection is lost before cleanup can reach the server, a hidden `.ssh-heaven-*.part` file may remain remotely.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl+K | Find hosts and actions |
+| Ctrl+Shift+N | New connection |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous session |
+| Ctrl+W | Close session (confirms an active connection) |
+| Ctrl+Shift+F | Find in active terminal |
+| Ctrl+Shift+C / Ctrl+Shift+V | Copy terminal selection / paste |
+| F2 / Delete in the file list | Rename / request deletion |
+
+Use file checkboxes or Ctrl-click to select multiple files. Drag the divider between the terminal and file browser to resize the panels.
+
+## Validation
+
+```powershell
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+npm run test:workspace
+npm run test:themes
+npm run test:productivity
+npm run test:chrome
+npm run test:fleet
+npm run test:tools
+npm run test:management
+npm run test:folders
+npm run test:mcp
+npm run test:terminal
+npm run test:wallpaper
+npm run test:quick-connect
+npm run test:input
+npm run test:stream
+npm run test:scripts
+npm run test:vault
+```
+
+The tests start an isolated SSH/SFTP server on localhost with a temporary filesystem. They verify authentication and host trust, real binary transfers, queue ordering, overwrite protection, and cancellation with delayed remote handles. The Electron end-to-end test uses a temporary settings directory, never a saved personal connection. Build before running the end-to-end test.
+
+On Windows, the Scripts end-to-end fixture also uses Git for Windows' Bash to execute reviewed scripts locally. This is a development-test dependency; the installed client runs scripts with `sh` on the connected SSH server.
+
+## Windows installer
+
+```powershell
+npm run dist:win
+```
+
+The NSIS installer and unpacked application are generated in `release/`. Development installers are unsigned. Signing and optional update notifications have a separate prepared release setup; see [RELEASE.md](RELEASE.md). Installation always stays manual.
+
+Run `npm run test:packaged` after packaging to run all seventeen automated end-to-end suites against the actual Windows executable, including SSH/SFTP, themes/wallpapers, credentials/PIN management, scripts, stream masking/paste, input timing, and existing workspace tools. The separate `npm run test:drag` harness requires real native window drags and header/control clicks; renderer-generated mouse events do not prove operating-system window movement.
+
+For background-only testing, set `$env:SSH_HEAVEN_BACKGROUND_TEST = '1'` before running a suite. The test app renders offscreen without showing or focusing a window; keyboard/pointer events stay inside its isolated renderer. In this mode native maximize, focus, caption-overlay, and physical-drag checks are skipped, and large layout tests use a resized offscreen viewport.
+
+## Structure and portability
+
+```text
+electron/    Main process: SSH sessions, SFTP, local dialogs, settings, IPC
+shared/      Typed renderer-to-main API
+src/         React interface and terminal rendering
+tests/       Local SSH/SFTP fixture, integration and end-to-end checks
+scripts/     Development launcher
+```
+
+The renderer has no Node.js access. A sandboxed preload exposes a small typed API; the main process validates IPC requests and owns connections and local file access. Remote output goes to the terminal emulator as bytes, preserving UTF-8 across network chunks.
+
+macOS and Linux build targets are configured as a starting point (`npm run dist:mac` and `npm run dist:linux`). Those platforms still need their own build, terminal/clipboard testing, and distribution checks. macOS releases should be built and signed on macOS. Windows x64 is the first supported release target.
+
+The lockfile pins the dependency tree. A version-scoped minimatch override fixes a development packaging dependency advisory without replacing older consumers that require the v3 API.

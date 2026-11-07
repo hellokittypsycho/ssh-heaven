@@ -1,0 +1,13 @@
+/* The image is a separate decorative layer. Foreground text stays fully opaque. */
+.window-content > .app-shell { position: relative; z-index: 1; }
+html[data-wallpaper="true"] .app-shell,
+html[data-wallpaper="true"] .main-shell,
+html[data-wallpaper="true"] .home-screen,
+html[data-wallpaper="true"] .connection-page,
+html[data-wallpaper="true"] .session-workspace,
+html[data-wallpaper="true"] .ssh-terminal { background: transparent; }
+html[data-wallpaper="true"] .ssh-terminal-surface .xterm-viewport { background-color: transparent !important; }
+html[data-wallpaper="true"] .sidebar { background: color-mix(in srgb, var(--sidebar) 92%, transparent); }
+html[data-wallpaper="true"] .recent-host-card,
+html[data-wallpaper="true"] .home-empty-history,
+html[data-wallpaper="true"] .home-favorite { background: color-mix(in srgb, var(--surface) 92%, transparent); }

@@ -1,0 +1,19 @@
+.modal.tunnel-manager { width:850px; }
+.tunnel-intro,.tunnel-note { color:var(--text-muted); font-size:11px; line-height:1.8; margin-bottom:18px; }
+.tunnel-manager-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:26px; }
+.tunnel-manager select { width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:9px; background:var(--input); color:var(--text); font-size:12px; }
+.tunnel-port-row { grid-template-columns:1fr 1fr; }
+.tunnel-route { display:flex; align-items:center; gap:9px; padding:12px; background:var(--input); color:var(--accent); border:1px solid var(--border); border-radius:9px; margin-bottom:10px; overflow:auto; }
+.tunnel-route code { font-family:"Cascadia Code",Consolas,monospace; font-size:11px; white-space:nowrap; }
+.tunnel-save { margin:0 0 17px; }
+.tunnel-list { max-height:600px; overflow:auto; }
+.tunnel-list h3 { margin:2px 0 16px; color:var(--text); font-size:14px; font-weight:550; }
+.tunnel-list article { padding:15px; border:1px solid var(--border); border-radius:11px; background:var(--input); margin-bottom:11px; }
+.tunnel-list article>header { display:flex; gap:7px; align-items:center; color:var(--text-secondary); }
+.tunnel-list article strong { flex:1; min-width:0; font-size:12px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tunnel-list article p { font-size:10px; line-height:1.8; color:var(--text-muted); margin:11px 0; overflow-wrap:anywhere; }
+.tunnel-status { padding:3px 5px; border-radius:5px; color:var(--text-muted); background:var(--surface-raised); font-size:9px; }
+.tunnel-status.active { color:var(--success); background:var(--success-soft); }
+.tunnel-status.error,.tunnel-list article p.tunnel-error { color:var(--danger); }
+.tunnel-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:15px; min-height:150px; color:var(--text-muted); font-size:12px; }
+@media(max-width:750px) { .tunnel-manager-grid { grid-template-columns:1fr; } }
