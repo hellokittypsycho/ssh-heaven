@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstat, open, unlink, type FileHandle } from 'node:fs/promises'
+import { chmod, lstat, open, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { Worker } from 'node:worker_threads'
@@ -22,7 +22,7 @@ function systemExecutable(name: string): string {
   return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', name)
 }
 
-export async function restrictPrivateKey(filename: string): Promise<void> {
+async function restrictWindowsAccess(filename: string, directory = false): Promise<void> {
   if (process.platform !== 'win32') return
   currentSid ??= executeFile(systemExecutable('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 }).then(({ stdout }) => {
     const sid = stdout.match(/\bS-1-\d+(?:-\d+)+\b/)?.[0]
@@ -30,9 +30,19 @@ export async function restrictPrivateKey(filename: string): Promise<void> {
     return sid
   })
   const sid = await currentSid
+  await executeFile(systemExecutable('icacls.exe'), [filename, '/inheritance:r', '/grant:r', `*${sid}:${directory ? '(OI)(CI)' : ''}(F)`], { windowsHide: true, timeout: 10_000 })
+}
+
+export async function restrictPrivateKey(filename: string): Promise<void> {
   // Run before writing secret bytes. Only this freshly created, exclusively
   // opened file is targeted; existing keys are never chmodded or overwritten.
-  await executeFile(systemExecutable('icacls.exe'), [filename, '/inheritance:r', '/grant:r', `*${sid}:(F)`], { windowsHide: true, timeout: 10_000 })
+  await restrictWindowsAccess(filename)
+}
+
+/** Only for the app's dedicated managed-key directory, never a user folder. */
+export async function restrictPrivateKeyDirectory(directory: string): Promise<void> {
+  if (process.platform === 'win32') await restrictWindowsAccess(directory, true)
+  else await chmod(directory, 0o700)
 }
 
 interface KeyPair { private: string; public: string }
@@ -100,7 +110,8 @@ function generateInWorker(request: KeyGenerationRequest, sshModulePath: string):
 }
 
 /** Generates keys offline. Only public key data and file paths cross back to UI. */
-export async function generateKeyFiles(value: unknown, privateValue: unknown, sshModulePath: string): Promise<GeneratedKey> {
+export async function generateKeyFiles(value: unknown, privateValue: unknown, sshModulePath: string, guard?: () => void): Promise<GeneratedKey> {
+  guard?.()
   const request = validateKeyRequest(value)
   const privateKeyPath = textValue(privateValue, 'private key filename', 32768)
   if (!path.isAbsolute(privateKeyPath)) throw new Error('Choose an absolute path for the private key.')
@@ -108,6 +119,7 @@ export async function generateKeyFiles(value: unknown, privateValue: unknown, ss
   const publicKeyPath = `${privateKeyPath}.pub`
   if (await exists(privateKeyPath) || await exists(publicKeyPath)) throw new Error('The private key or its .pub file already exists. Choose a new filename; existing keys are never overwritten.')
   const keys = await generateInWorker(request, sshModulePath)
+  guard?.()
   const publicKey = keys.public.trim()
   const parts = publicKey.split(/\s+/)
   if (parts[0] !== (request.type === 'rsa' ? 'ssh-rsa' : 'ssh-ed25519') || !parts[1]) throw new Error('The generated public key is invalid.')
@@ -122,9 +134,11 @@ export async function generateKeyFiles(value: unknown, privateValue: unknown, ss
     if (!(await sameOwnedFile(privateFile))) throw new Error('The key destination changed while securing the file.')
     const publicFile = await createOwnedFile(publicKeyPath, 0o644)
     owned.push(publicFile)
+    guard?.()
     await privateFile.handle.writeFile(`${keys.private.trimEnd()}\n`, 'utf8')
     await publicFile.handle.writeFile(`${publicKey}\n`, 'utf8')
     await Promise.all(owned.map((file) => file.handle.sync()))
+    guard?.()
     completed = true
     return { type: request.type, privateKeyPath, publicKeyPath, publicKey, fingerprint }
   } catch (error) {

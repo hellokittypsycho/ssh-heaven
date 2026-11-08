@@ -99,3 +99,18 @@ test('key generation rejects unsupported algorithms, multiline comments, and exc
   assert.throws(() => validateKeyRequest({ type: 'rsa', comment: 'x'.repeat(257) }), /256/)
   assert.throws(() => validateKeyRequest({ type: 'ed25519', passphrase: 'x'.repeat(8193) }), /8192/)
 })
+
+test('revoking an authorized generation after file writes cleans up only its newly created encrypted pair', { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ssh-heaven-keygen-revoked-'))
+  try {
+    const preserved = path.join(directory, 'existing-key')
+    await writeFile(preserved, 'EXISTING KEY MUST REMAIN')
+    let checks = 0
+    await assert.rejects(generateKeyFiles({ type: 'ed25519', passphrase: 'A sufficiently long key password.' }, path.join(directory, 'revoked-key'), sshModulePath, () => {
+      if (++checks === 4) throw new Error('Key generation authorization was revoked.')
+    }), /authorization was revoked/)
+    assert.equal(checks, 4)
+    assert.deepEqual(await readdir(directory), ['existing-key'])
+    assert.equal(await readFile(preserved, 'utf8'), 'EXISTING KEY MUST REMAIN')
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})

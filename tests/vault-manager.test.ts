@@ -249,3 +249,22 @@ test('a manual/minimize lock during the atomic PIN-change rename cannot reopen t
     await h.close()
   }
 })
+
+test('external key-view guards belong to the exact unlocked owner grant and cannot revive after locking and unlocking again', async () => {
+  const h = await fixture()
+  try {
+    assert.throws(() => h.manager.authorizeRequest(1), /Unlock/)
+    await h.manager.setup(1, '12345')
+    const guard = h.manager.authorizeRequest(1)
+    assert.doesNotThrow(guard)
+    assert.throws(() => h.manager.authorizeRequest(2), /Unlock/)
+    h.manager.lock(1)
+    assert.throws(guard, /Unlock|locked/)
+    await h.manager.unlock(1, '12345')
+    assert.throws(guard, /locked/)
+    const fresh = h.manager.authorizeRequest(1)
+    assert.doesNotThrow(fresh)
+    h.advance(5 * 60_000 + 1)
+    assert.throws(fresh, /Unlock|locked/)
+  } finally { await h.close() }
+})

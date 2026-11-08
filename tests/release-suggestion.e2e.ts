@@ -13,7 +13,7 @@ const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const executable = process.env.SSH_HEAVEN_BASELINE_EXECUTABLE
 if (!executable || !(await stat(executable).catch(() => null))?.isFile()) throw new Error('Set SSH_HEAVEN_BASELINE_EXECUTABLE to the preserved packaged SSH Heaven 0.8.1 executable. Run this manual check only after publishing the new release.')
 const expectedVersion = (JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { version: string }).version
-assert.equal(expectedVersion, '0.9.0', 'This release check verifies the published 0.9.0 suggestion in the preserved 0.8.1 app')
+assert.notEqual(expectedVersion, '0.8.1', 'Publish a newer version before testing the preserved 0.8.1 app')
 const endpoint = 'https://api.github.com/repos/hellokittypsycho/ssh-heaven/releases/latest'
 const downloadPage = 'https://github.com/hellokittypsycho/ssh-heaven/releases/latest'
 const temporary = await mkdtemp(path.join(tmpdir(), 'ssh-heaven-release-suggestion-'))

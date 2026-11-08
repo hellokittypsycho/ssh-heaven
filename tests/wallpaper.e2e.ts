@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { deflateSync } from 'node:zlib'
 import { _electron, expect, type ElectronApplication, type Locator, type Page } from '@playwright/test'
+import { channels } from '../electron/channels'
 import { startFixture } from './fixture'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -66,9 +67,22 @@ await writeFile(brokenPath, brokenWebp)
 async function launch(): Promise<Page> {
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
   delete env.ELECTRON_RUN_AS_NODE
+  env.SSH_HEAVEN_BACKGROUND_TEST = '1'
   const executable = process.env.SSH_HEAVEN_EXECUTABLE
   app = await _electron.launch({ executablePath: executable || require('electron') as string, args: [...(executable ? [] : [root]), `--user-data-dir=${dataDirectory}`], env, timeout: 30_000 })
   const current = await app.firstWindow()
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isVisible() || window.isFocused())), false, 'Wallpaper E2E must keep native windows hidden and unfocused')
+  // Add real IPC latency to enabled/disabled saves. The native handler still
+  // performs every write, but optimistic UI changes cannot serve as evidence
+  // that persistence (or a subsequently queued picker) has finished.
+  await app.evaluate(({ ipcMain }, channel) => {
+    const handler = (ipcMain as unknown as { _invokeHandlers: Map<string, (event: unknown, preferences: unknown) => unknown> })._invokeHandlers.get(channel)!
+    ipcMain.removeHandler(channel)
+    ipcMain.handle(channel, async (event, preferences: unknown) => {
+      if (preferences && typeof preferences === 'object' && 'enabled' in preferences) await new Promise<void>((resolve) => setTimeout(resolve, 100))
+      return handler(event, preferences)
+    })
+  }, channels.setWallpaperPreferences)
   current.on('pageerror', (error) => rendererErrors.push(error.message))
   await current.emulateMedia({ reducedMotion: 'no-preference' })
   await expect(current.getByRole('button', { name: 'Open home', exact: true })).toBeVisible()
@@ -129,9 +143,14 @@ try {
   await expect(current.locator('.wallpaper-layer')).toHaveCount(0)
   await dialog.getByRole('checkbox', { name: 'Enable wallpaper', exact: true }).check()
   await imageLoaded(current)
+  // Rendering follows optimistic state. Capture the canceled-picker baseline
+  // only after the prior off/on queue has reached the native saved state.
+  await expect(dialog.locator('.appearance-saving')).toHaveCount(0)
+  await expect.poll(async () => (await current.evaluate(() => window.sshHeaven.getWallpaperState())).enabled).toBe(true)
   await picker(null)
   const beforeCancel = await current.evaluate(() => window.sshHeaven.getWallpaperState())
   await dialog.getByRole('button', { name: 'Choose wallpaper', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: 'Choose wallpaper', exact: true })).toBeEnabled()
   assert.deepEqual(await current.evaluate(() => window.sshHeaven.getWallpaperState()), beforeCancel)
   await dialog.getByRole('slider', { name: 'Wallpaper opacity', exact: true }).scrollIntoViewIfNeeded()
   await current.screenshot({ path: path.join(root, 'test-results', 'wallpaper-appearance.png') })
@@ -182,7 +201,7 @@ try {
   await current.emulateMedia({ reducedMotion: 'reduce' })
   await expect.poll(() => source(current)).toBe(state.posterUrl)
   await expect(dialog.getByRole('checkbox', { name: 'Animate GIF', exact: true })).toBeDisabled()
-  assert.equal((await current.evaluate(() => window.sshHeaven.getWallpaperState())).animate, true, 'System motion preference must not overwrite the user animation setting')
+  await expect.poll(async () => (await current.evaluate(() => window.sshHeaven.getWallpaperState())).animate, { message: 'System motion preference must not overwrite the user animation setting' }).toBe(true)
   await current.emulateMedia({ reducedMotion: 'no-preference' })
   await expect.poll(() => source(current)).toBe(state.assetUrl)
   await expect(dialog.getByRole('checkbox', { name: 'Animate GIF', exact: true })).toBeEnabled()
@@ -215,10 +234,12 @@ try {
   await expect.poll(async () => (await current.evaluate(() => window.sshHeaven.getWallpaperState())).enabled).toBe(false)
   await dialog.getByRole('button', { name: 'Remove wallpaper', exact: true }).click()
   await expect(dialog.getByText('No wallpaper selected', { exact: true })).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Choose wallpaper', exact: true })).toBeEnabled()
   await expect(dialog.getByRole('checkbox', { name: 'Enable wallpaper', exact: true })).toBeDisabled()
-  assert.equal((await current.evaluate(() => window.sshHeaven.getWallpaperState())).assetUrl, undefined)
+  await expect.poll(async () => (await current.evaluate(() => window.sshHeaven.getWallpaperState())).assetUrl).toBeUndefined()
   assert.deepEqual((await readdir(path.join(dataDirectory, 'wallpaper'))).filter((name) => name !== 'wallpaper.json'), [])
   assert.deepEqual(rendererErrors, [])
+  assert.equal(await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isVisible() || window.isFocused())), false)
   console.log('Wallpaper E2E passed: Pink/native theme, image selection and managed copy, instant opacity/blur/fit/enable controls, canceled picker, live terminal preservation/transparency, GIF animation/poster and reduced-motion override, restart persistence without original files, safe rejection/decode failure, and remove cleanup.')
 } catch (error) {
   if (page && app) {

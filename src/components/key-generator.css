@@ -1,4 +1,4 @@
-.key-generator-modal { width:570px; }
+.modal.key-generator-modal { width:600px; }
 .keygen-intro,.keygen-success { display:flex; align-items:center; gap:14px; margin-bottom:25px; }
 .keygen-intro>span,.keygen-success>span { display:grid; place-items:center; width:49px; height:50px; flex-shrink:0; border:1px solid var(--accent-border); border-radius:12px; color:var(--accent); background:var(--accent-soft); }
 .keygen-intro h3,.keygen-success h3 { font-size:17px; color:var(--text); letter-spacing:-.2px; font-weight:600; margin-bottom:7px; }
@@ -7,6 +7,7 @@
 .key-generator-modal select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .keygen-field-hint { font-size:12px; color:var(--text-muted); line-height:1.6; margin-top:-8px; margin-bottom:20px; }
 .keygen-passphrase-row { grid-template-columns:1fr 1fr; }
+.keygen-encryption-hint { margin:-6px 0 18px; color:var(--text-muted); font-size:11px; line-height:1.8; }
 .keygen-local-note { display:flex; align-items:flex-start; gap:9px; padding:14px; border:1px solid var(--accent-border); border-radius:10px; color:var(--accent); background:var(--accent-soft); margin:4px 0 16px; }
 .keygen-local-note p { font-size:12px; color:var(--text-secondary); line-height:1.8; }
 .keygen-local-note code { font-family:"Cascadia Code",Consolas,monospace; color:var(--text); font-size:11px; }

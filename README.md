@@ -2,7 +2,7 @@
 
 A Windows-first desktop SSH terminal and SFTP workspace built with TypeScript, Electron, React, xterm.js, and ssh2.
 
-[Download the latest Windows release](https://github.com/hellokittypsycho/ssh-heaven/releases/latest). Preview installers are unsigned; downloads and installation stay manual.
+[Download the latest Windows release](https://github.com/hellokittypsycho/ssh-heaven/releases/latest). Preview installers are unsigned. Updates offer in-app downloading and installation, each started by the user.
 
 ## Run locally
 
@@ -35,7 +35,7 @@ npm start
 - Reviewed commands across a named group, with separate per-server output, exit status, timeouts, and cancellation.
 - Keyboard command palette for finding hosts and actions, plus session switching and guarded session closing.
 - Password and private key authentication, including encrypted-key passphrases.
-- Optional remembered server passwords protected by OS encryption, with a Forget action. SSH connections reuse passwords in the main process; explicit password reveals are available only inside the unlocked vault manager.
+- Remembered server passwords protected by OS encryption, enabled by default with an opt-out and Forget action. New connections use `root` when the username is empty. SSH connections reuse passwords in the main process; explicit password reveals are available only inside the unlocked vault manager.
 - Vault manager for server passwords and named SSH keys, available after setting a five-digit PIN. Quick connect remains available while management is locked.
 - One-click **Quick connect** for hosts with saved passwords from the host sidebar, recent hosts, or quick switcher. Failed saved passwords reopen the connection form for correction; successful connections preserve your unfinished form draft.
 - Multiple SSH terminal sessions with resizing, ANSI colors, scrollback, and copy/paste.
@@ -48,7 +48,7 @@ npm start
 - Saved local/remote SSH forwarding rules and jump-host routes with verification for every hop.
 - Optional reconnect with bounded backoff and opt-in `tmux` sessions for persistent remote shells.
 - Optional local MCP server for external AI clients, with copyable client configuration and in-app review for commands and file edits.
-- Update suggestions from GitHub Releases at startup, plus **Check for updates** in the workspace library. Opening the release page, downloading, and installation require user actions.
+- GitHub update suggestions at startup, with in-app **Download update**, progress/cancel/retry, SHA-256 verification, and an explicit **Install now** action after the download is ready.
 - Search terminal output with match highlighting, case matching, and next/previous results; adjust and remember terminal font size.
 - Explicit server fingerprint verification, with remembered fingerprints and a warning when a key changes.
 - Resizable SFTP browser with folder history, breadcrumbs, file filtering, sorting, hidden files, and multi-selection.
@@ -56,10 +56,10 @@ npm start
 - Recursive folder upload/download, file/folder drops from Explorer, and retry actions for failed or canceled transfers.
 - Folder creation, renaming, and confirmed deletion of files or empty folders.
 - Native file dialogs and overwrite confirmation for transfers.
-- Local SSH key generation: Ed25519 or RSA 3072-bit, optional passphrase protection, public-key fingerprint/copy, and use the generated key in a connection.
+- Local SSH key generation: Ed25519 or RSA 3072-bit, required encryption password, automatic protected storage, public-key fingerprint/copy, and automatic key-library registration. PIN-gated public/private key viewing also requires the key password each time.
 - Built-in remote text editor: syntax highlighting, line numbers/folding, language selection, find/replace, Ctrl+S, unsaved-change confirmation, and server-change conflict checks. Double-click a file or select it and click Edit.
 
-For individual connections, passwords are saved only when **Remember password on this device** is selected and authentication succeeds. Bulk import explicitly saves the supplied passwords without connecting to the servers. The separate credential vault uses Electron's OS-backed encryption (Windows DPAPI); plaintext passwords are never written to host profiles. Connection APIs expose availability and profile IDs only; the PIN-gated manager can explicitly reveal one selected password. Saved credentials are tied to a specific host, port, username, and authentication type and are invalidated when that identity changes or the profile is deleted. Linux plaintext `basic_text` storage is disabled. Key passphrases remain in memory and are not saved. Private keys stay in the files you select. Verify a new server fingerprint against a trusted source before accepting it.
+For individual connections, **Remember password on this device** starts selected when secure storage is available. Uncheck it to opt out; passwords are saved only after successful authentication. Bulk import explicitly saves supplied passwords without connecting. The separate credential vault uses Electron's OS-backed encryption (Windows DPAPI); plaintext passwords are never written to host profiles. Connection APIs expose availability and profile IDs only; the PIN-gated manager can explicitly reveal one selected password. Saved credentials are bound to host, port, username, and authentication type and are invalidated when that identity changes or the profile is deleted. Linux plaintext `basic_text` storage is disabled. Key encryption passwords remain in memory and are not saved. Generated private keys are encrypted in the application's protected key folder; imported keys stay at their selected paths. Verify a new server fingerprint against a trusted source before accepting it.
 
 ## Workspace navigation
 
@@ -74,6 +74,8 @@ Open SSH sessions appear in a separate strip. Tabs keep their width as more serv
 ## Vault, stream mode, and scripts
 
 Open **Vault** in the sidebar and enable a five-digit PIN before managing passwords or SSH keys. The manager supports revealing, copying, replacing, setting, or forgetting a server password, plus naming, importing, generating, and removing SSH key entries. Removing an entry leaves the private key file in place. Revealed passwords hide after 30 seconds; native password copies clear after 30 seconds if the clipboard still contains that same value. Stream mode disables password reveals. Management locks after five minutes, on minimize, or when leaving Vault; quick connect and existing sessions continue. PIN verifiers and failed-attempt counters are protected by OS encryption, with persistent escalating lockouts. This device's PIN is separate from portable backup passphrases and is not exported.
+
+Choose **View key** on a saved SSH key, then enter that key's encryption password. Both public-key text and decrypted private PEM are read-only, hide after 30 seconds, and clear on close, vault lock, leaving Vault, or enabling Stream mode. Every reveal requires the key password again. Unencrypted imported keys can still connect but cannot use this password-gated viewer until encrypted. The encrypted on-disk file is unchanged by viewing it.
 
 **Stream mode** changes display only. Recognized IPv4 and IPv6 addresses are replaced with equal-width bullets in labels, tooltips, terminal output/scrollback, and code editors. Terminal selections/copies and editor clipboard output are sanitized. Sensitive text fields hide their glyphs, while native form values, connection endpoints, saved scripts, and transmitted commands keep their real contents. The terminal parses ANSI/cursor updates before masking, including wrapped addresses and alternate-screen applications. It does not identify arbitrary secrets or mask text inside wallpaper images.
 
@@ -98,7 +100,7 @@ The editor accepts regular UTF-8 text files up to 2 MiB. It preserves a UTF-8 BO
 
 Recent history records successful connections, including connections you do not add to the host library. It contains host metadata and timestamps only and can be cleared from Home.
 
-Generated private keys are written directly by the main process; their contents never enter the interface. Existing private/public key files are never overwritten. Private files use mode `0600` on Unix and an ACL restricted to the current Windows account. Generation runs in a worker so other sessions stay responsive. Keep a copy of the private key in a safe location; passphrases cannot be recovered by the app.
+New keys are generated into unique files under the app's `ssh-keys` user-data folder; there is no destination picker. A matching password of at least 12 characters is required. Private keys use OpenSSH AES-256-CTR encryption with bcrypt PBKDF (64 rounds); the folder and private files receive owner-only permissions (`0700`/`0600` on Unix and current-account ACLs on Windows). Existing keys are never overwritten. Generation and password verification run in workers so SSH stays responsive. Only an explicit, PIN- and password-verified View key request returns decrypted private material to the interface. Keep an encrypted backup; forgotten key passwords cannot be recovered.
 
 File transfers use **SFTP over SSH**. FTP/FTPS, SSH agent authentication, and cloud sync are outside this preview.
 
@@ -120,7 +122,7 @@ Upload a folder using the folder button, or drop files/folders from Explorer ont
 
 Backup exports encrypt profiles, library items, workspaces, and selected UI preferences using AES-256-GCM with a scrypt-derived key. Remembered passwords and private key contents are optional. Use a passphrase of at least 12 characters; it is never saved. Restoring first decrypts and validates a preview, then merges new hosts/library items while preserving existing hosts and credentials. Included private keys are restored to new managed paths with restricted file permissions. Metadata-only backups keep key paths, so missing keys must be relinked on another machine. Restore previews expire after ten minutes. Backups are limited to 32 MiB and cannot recover a forgotten backup passphrase.
 
-Updates are **notifications only**: installed builds check this repository's latest stable GitHub Release shortly after startup, or when you choose **Manage workspace → Updates → Check for updates**. A newer version displays a notice linking to the fixed GitHub release page. The app never downloads an installer, installs an update, or restarts automatically. Version 0.8.0 and earlier need one manual upgrade to 0.8.1 or later before suggestions work. Local development runs make no update requests. Installers remain unsigned; see [RELEASE.md](RELEASE.md) for signing and release setup.
+Installed builds check the latest stable GitHub Release after startup or through **Updates → Check for updates**. Checks download metadata only. On Windows x64, **Download update** streams a validated release installer inside the app, with progress, cancellation, retry, and size/SHA-256 verification. When ready, **Install now** asks you to save work, closes connections/transfers, rechecks the file, and starts the installer. Each step requires a separate click. Versions 0.8.1–0.9.0 still open the release page, so install 0.10.0 manually once to gain in-app downloading. Local development makes no update requests. Installers remain unsigned; see [RELEASE.md](RELEASE.md).
 
 Open **MCP server** in the sidebar to connect an external AI assistant to SSH Heaven. Read tools use existing SSH sessions; command and file-edit tools require an explicit in-app review. MCP starts disabled and runs only on loopback. See [MCP.md](MCP.md) for setup and access details.
 
@@ -178,9 +180,9 @@ On Windows, the Scripts end-to-end fixture also uses Git for Windows' Bash to ex
 npm run dist:win
 ```
 
-The NSIS installer and unpacked application are generated in `release/`. Preview installers are unsigned and include GitHub update suggestions. Signing and custom release hosting have a separate prepared setup; see [RELEASE.md](RELEASE.md). Installation always stays manual.
+The NSIS installer and unpacked application are generated in `release/`. Preview installers are unsigned and include GitHub update checks and user-triggered downloading/installation. Signing and custom release hosting have a separate prepared setup; see [RELEASE.md](RELEASE.md).
 
-Run `npm run test:packaged` after packaging to run all nineteen automated end-to-end suites against the actual Windows executable, including SSH/SFTP, themes/wallpapers, credentials/PIN management, scripts, stream masking/paste, input timing, navigation with ten real SSH sessions, GitHub update suggestions, and existing workspace tools. `npm run test:updates` runs the update-notice suite alone against `release/win-unpacked/SSH Heaven.exe`; it requires a current packaged build because development runs intentionally disable release checks. The separate `npm run test:drag` harness requires real native window drags and header/control clicks; renderer-generated mouse events do not prove operating-system window movement.
+Run `npm run test:packaged` after packaging to run all twenty automated end-to-end suites against the Windows executable, including SSH/SFTP, encrypted key generation/viewing, vault, scripts, themes, privacy, input timing, navigation, connection defaults, and in-app update downloading. `npm run test:updates` requires a current packaged build; its process-launch interceptor prevents any installer from running. Actual installer execution and native physical window movement require separate manual validation. The separate `npm run test:drag` harness requires real native window drags; renderer events do not prove OS window movement.
 
 For background-only testing, set `$env:SSH_HEAVEN_BACKGROUND_TEST = '1'` before running a suite. The test app renders offscreen without showing or focusing a window; keyboard/pointer events stay inside its isolated renderer. In this mode native maximize, focus, caption-overlay, and physical-drag checks are skipped, and large layout tests use a resized offscreen viewport.
 

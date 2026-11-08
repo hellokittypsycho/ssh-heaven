@@ -167,6 +167,7 @@ try {
   await page.getByLabel('SSH port', { exact: true }).fill(String(unsaved.port))
   await page.getByLabel('Username', { exact: true }).fill(unsaved.username)
   await page.getByLabel('Password', { exact: true }).fill(unsaved.password)
+  await page.getByRole('checkbox', { name: 'Remember password on this device', exact: true }).uncheck()
   await page.getByRole('checkbox', { name: 'Save to hosts', exact: true }).uncheck()
   await page.getByRole('button', { name: 'Connect', exact: true }).click()
   await trustAndConnect()

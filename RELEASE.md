@@ -1,10 +1,10 @@
-# Signed releases and update notifications
+# Signed releases and in-app updates
 
-SSH Heaven only checks whether a newer version exists. It never downloads an installer, installs an update, or restarts the app automatically. An available-update notice opens a fixed download page in the user's browser; the user chooses when to download and install.
+Startup checks read version metadata only. On Windows x64, the user chooses **Download update**, waits for the in-app transfer and verification, then separately chooses **Install now** and confirms closing the workspace. No installer bytes or installation start from a background version check.
 
-Packaged builds use the public GitHub Releases API configured in `build/release-config.json`: `https://api.github.com/repos/hellokittypsycho/ssh-heaven/releases/latest`. A stable `tag_name` such as `v0.8.1` supplies the version; draft and prerelease responses are rejected. Notices open the fixed page `https://github.com/hellokittypsycho/ssh-heaven/releases/latest` only after a click. Release-provided asset URLs and download destinations are ignored. No GitHub token is embedded or required.
+Packaged builds use `https://api.github.com/repos/hellokittypsycho/ssh-heaven/releases/latest`. Stable numeric tags supply the version; draft and prerelease responses are rejected. In-app downloads require exactly one matching Windows installer named `SSH.Heaven.Setup.X.Y.Z.exe` or its spaces variant, a positive asset ID, uploaded state, published size up to 1 GiB, SHA-256 digest, and an exact download URL under the same repository/version. No GitHub token is embedded. Missing or invalid installer metadata falls back to opening the fixed public release page after a click.
 
-Local development runs skip release initialization and make no update requests. `npm run dist:win` makes an unsigned Windows installer with GitHub suggestions enabled. Versions 0.8.0 and earlier need one manual upgrade to 0.8.1 or later to enable suggestions.
+Local development skips release initialization and makes no update requests. `npm run dist:win` creates an unsigned installer with the current update workflow. Versions 0.8.1–0.9.0 only open the release page; install 0.10.0 manually once to gain in-app downloading. Earlier builds need that manual upgrade too.
 
 ## Preparing a signed Windows release
 
@@ -17,12 +17,16 @@ Local development runs skip release initialization and make no update requests. 
 For custom hosting, set `provider` to `manifest` in the build configuration. The JSON manifest contains only a stable semantic version:
 
 ```json
-{ "version": "0.9.0" }
+{ "version": "0.10.0" }
 ```
 
-Installed builds check once about five seconds after startup and when the user chooses **Check for updates**. No host inventory, credentials, or personal settings are sent. HTTPS requests have an eight-second timeout, a 64 KiB response limit, and do not follow redirects. Download links are fixed in the application build, not accepted from a remote response. Offline and GitHub rate-limit failures appear in Updates and can be retried manually. A dismissed version stays hidden for the current app run; a later version can show a new notice. Local development runs remain unconfigured. To disable notifications in a custom distribution, set `enabled` to `false` in its tracked release configuration before packaging.
+Version checks run about five seconds after startup and through **Check for updates**, without host inventory, credentials, or personal settings. Metadata requests have an eight-second timeout and 64 KiB cap and do not follow redirects. Installer transfers allow at most five HTTPS redirects to the exact approved GitHub release CDN hosts, use a 30-second connection inactivity timeout and ten-minute overall limit, and never send credentials. Bytes stream into exclusive cache files under application user data; expected size and SHA-256 must match before the atomic ready rename. Cancellation removes only files created by that transfer. Cache identity and the complete file hash are checked again before and after workspace shutdown, immediately before execution.
 
-Keep the app ID and product name stable across releases so the manually launched NSIS installer recognizes the existing app. Test an installed-version upgrade on a separate machine before public rollout. Unsigned Windows preview installers are published on [GitHub Releases](https://github.com/hellokittypsycho/ssh-heaven/releases/latest), with a SHA-256 checksum file. Update suggestions are enabled; a signing certificate remains unconfigured. macOS and Linux require their own distribution validation.
+**Install now** confirms that connections/transfers will close and unsaved drafts will be lost, then launches the verified NSIS file with `/S --updated --force-run`. The existing app ID/product name preserve normal installer upgrades and app data; the installer relaunches the updated app. Installer failures keep a retryable state. The UI tests intercept process launch and do not change the machine's installed application; validate a real installed-version upgrade separately. Custom manifest hosting retains the release-page fallback because it does not supply validated GitHub asset metadata.
+
+Offline/rate-limit/download failures can be retried. A dismissed version remains hidden for the current run; a later version can show a notice. To disable update checks in a custom distribution, set `enabled` to `false` before packaging.
+
+Keep app ID/product name stable and test an installed-version upgrade on a separate machine. Unsigned preview installers and checksum files are published on [GitHub Releases](https://github.com/hellokittypsycho/ssh-heaven/releases/latest). A signing certificate remains unconfigured; SHA-256 integrity checks do not replace publisher signing. macOS/Linux require separate distribution validation and currently use the release-page fallback.
 
 ## Verify suggestions in the previous release
 

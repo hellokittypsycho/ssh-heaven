@@ -30,8 +30,8 @@ export interface BackupExportRequest { password: string; includePasswords: boole
 export interface BackupExportResult { canceled: boolean; hosts: number; keys: number; path?: string }
 export interface BackupPreview { token: string; filename: string; hosts: number; newHosts: number; skippedHosts: number; keys: number; passwords: number; runbooks: number; workspaces: number }
 export interface BackupRestoreResult { hosts: number; keys: number; skippedHosts: number; preferences: Record<string, string> }
-export type UpdateStatus = 'unconfigured' | 'idle' | 'checking' | 'available' | 'not-available' | 'error'
-export interface UpdateState { status: UpdateStatus; currentVersion: string; version?: string; message?: string }
+export type UpdateStatus = 'unconfigured' | 'idle' | 'checking' | 'available' | 'not-available' | 'error' | 'downloading' | 'downloaded' | 'installing'
+export interface UpdateState { status: UpdateStatus; currentVersion: string; version?: string; message?: string; downloadAvailable?: boolean; downloadedBytes?: number; totalBytes?: number; progress?: number }
 export interface McpApproval {
   id: string; tool: 'run_command' | 'write_remote_file' | 'run_group_command'; summary: string
   sessionId?: string; host?: string; username?: string; port?: number; group?: string
@@ -44,6 +44,7 @@ export interface McpState { enabled: boolean; endpoint?: string; connectionFile?
 export interface RecentHost { profile: HostProfile; lastConnectedAt: number }
 export interface KeyGenerationRequest { type: 'ed25519' | 'rsa'; comment?: string; passphrase?: string }
 export interface GeneratedKey { type: 'ed25519' | 'rsa'; privateKeyPath: string; publicKeyPath: string; publicKey: string; fingerprint: string }
+export interface RevealedVaultKey { publicKey: string; privateKey: string }
 
 export interface ConnectRequest {
   sessionId: string
@@ -145,6 +146,7 @@ export interface SshHeavenApi {
   forgetVaultPassword(profileId: string): Promise<void>
   saveVaultKey(key: SavedKey): Promise<void>
   deleteVaultKey(id: string): Promise<void>
+  revealVaultKey(id: string, password: string): Promise<RevealedVaultKey>
   onVaultState(callback: (state: VaultState) => void): () => void
   saveProfile(profile: HostProfile): Promise<HostProfile>
   deleteProfile(id: string): Promise<void>
@@ -178,6 +180,9 @@ export interface SshHeavenApi {
   getUpdateState(): Promise<UpdateState>
   checkForUpdates(): Promise<UpdateState>
   openUpdateDownload(): Promise<void>
+  downloadUpdate(): Promise<UpdateState>
+  cancelUpdateDownload(): Promise<UpdateState>
+  installUpdate(): Promise<void>
   onUpdate(callback: (event: UpdateState) => void): () => void
   getMcpState(): Promise<McpState>
   setMcpEnabled(enabled: boolean): Promise<McpState>

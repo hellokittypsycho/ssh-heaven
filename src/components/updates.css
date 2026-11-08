@@ -1,0 +1,12 @@
+.update-download-controls { display: flex; align-items: center; gap: 12px; }
+.update-download-meter { display: flex; align-items: center; gap: 9px; color: var(--text-secondary); font-size: 11px; }
+.update-download-meter progress { width: 150px; height: 6px; border: 0; border-radius: 4px; accent-color: var(--accent); overflow: hidden; }
+.update-download-meter progress::-webkit-progress-bar { background: var(--surface-raised); border-radius: 4px; }
+.update-download-meter progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+.update-download-meter>span { min-width: 30px; font-variant-numeric: tabular-nums; }
+.update-download-status { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+.update-notice { flex-wrap: wrap; flex-shrink: 0; }
+.update-notice>span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.management-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+.update-install-note { margin-top: 12px; color: var(--text-muted); font-size: 11px; line-height: 1.7; }
+@media (max-width: 1050px) { .update-download-meter progress { width: 105px; } }

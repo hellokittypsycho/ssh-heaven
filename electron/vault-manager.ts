@@ -101,6 +101,11 @@ export class VaultManager {
     return grant
   }
   private sameGrant(ownerId: number, grant: Grant): void { if (this.grant(ownerId) !== grant) throw new Error('The vault was locked while this request was running.') }
+  /** Capture this unlock, so locking then unlocking cannot revive a pending request. */
+  authorizeRequest(ownerId: number): () => void {
+    const grant = this.grant(ownerId)
+    return () => this.sameGrant(ownerId, grant)
+  }
   private unlockGrant(ownerId: number): VaultState {
     this.lock(ownerId)
     const expires = this.now() + (this.options.unlockTimeoutMs ?? 5 * 60_000)

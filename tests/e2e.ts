@@ -238,7 +238,7 @@ try {
   await hostPalette.getByRole('tablist', { name: 'Switcher filters', exact: true }).getByRole('tab', { name: 'Hosts', exact: true }).click()
   const hostSearch = hostPalette.getByRole('combobox', { name: 'Search hosts and actions', exact: true })
   await hostSearch.fill('Development')
-  await expect(hostPalette.getByRole('option', { name: /Local integration/ })).toBeVisible()
+  await expect(hostPalette.getByRole('option', { name: /^Local integration/ })).toBeVisible()
   await page.screenshot({ path: path.join(root, 'test-results', 'command-palette.png') })
   await hostSearch.press('Enter')
   await page.getByLabel('Password', { exact: true }).fill(fixture.password)

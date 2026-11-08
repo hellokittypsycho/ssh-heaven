@@ -67,6 +67,8 @@ async function activeTabRevealed() {
 async function connect(profile: HostProfile, password: string) {
   await page!.locator('.sidebar').getByTitle(`Connect to ${profile.name}`, { exact: true }).click()
   await page!.getByLabel('Password', { exact: true }).fill(password)
+  // This suite isolates navigation; remembered-password actions have their own coverage.
+  await page!.getByLabel('Remember password on this device', { exact: true }).uncheck()
   await page!.getByRole('button', { name: 'Connect', exact: true }).click()
   await expect.poll(async () => {
     const trust = page!.getByRole('button', { name: 'Trust & connect', exact: true })

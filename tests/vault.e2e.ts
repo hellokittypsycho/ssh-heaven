@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, stat } from 'node:fs/promises'
+import { createPrivateKey, createPublicKey, randomBytes } from 'node:crypto'
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { _electron, expect, type ElectronApplication, type Page } from '@playwright/test'
+import ssh2 from 'ssh2'
 import { channels } from '../electron/channels'
 import { startFixture } from './fixture'
 
@@ -15,8 +17,11 @@ const dataDirectory = path.join(temporary, 'settings')
 await mkdir(dataDirectory)
 await mkdir(path.join(root, 'test-results'), { recursive: true })
 const fixture = await startFixture({ privateKeyAuth: true })
-const generatedPath = path.join(temporary, 'generated', 'vault_ed25519')
-await mkdir(path.dirname(generatedPath))
+const unencryptedPath = path.join(temporary, 'unencrypted-fixture.pem')
+const fixtureKey = ssh2.utils.parseKey(await readFile(fixture.privateKeyPath!), fixture.passphrase)
+if (fixtureKey instanceof Error) throw fixtureKey
+await writeFile(unencryptedPath, (Array.isArray(fixtureKey) ? fixtureKey[0] : fixtureKey).getPrivatePEM(), { mode: 0o600 })
+const keyPassword = randomBytes(24).toString('base64url')
 const pin = '57286', newPin = '93174', replacement = 'temporary-vault-replacement'
 let app: ElectronApplication | undefined
 let page: Page | undefined
@@ -124,15 +129,135 @@ try {
   await keyDialog.getByRole('button', { name: 'Save vault key', exact: true }).click()
   await expect(vault().getByRole('button', { name: 'Edit vault key Existing vault identity', exact: true })).toBeVisible()
   assert.ok((await page!.evaluate(() => window.sshHeaven.getLibrary())).keys.some((key) => key.path === fixture.privateKeyPath))
-  await app!.evaluate(({ dialog }, filename) => { dialog.showSaveDialog = (async () => ({ canceled: false, filePath: filename })) as typeof dialog.showSaveDialog }, generatedPath)
+  await app!.evaluate(({ dialog }, filename) => { dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [filename] })) as typeof dialog.showOpenDialog }, unencryptedPath)
+  await vault().getByRole('button', { name: 'Add SSH key', exact: true }).click()
+  const plainKeyDialog = page!.getByRole('dialog', { name: 'Add SSH key', exact: true })
+  await plainKeyDialog.getByLabel('Vault key name', { exact: true }).fill('Unencrypted test identity')
+  await plainKeyDialog.getByRole('button', { name: 'Browse vault SSH key', exact: true }).click()
+  await plainKeyDialog.getByRole('button', { name: 'Save vault key', exact: true }).click()
+  await vault().getByRole('button', { name: 'View key Unencrypted test identity', exact: true }).click()
+  const unencryptedView = page!.getByRole('dialog', { name: 'View SSH key', exact: true })
+  await unencryptedView.getByLabel('Key encryption password', { exact: true }).fill('not-an-encrypted-key')
+  await unencryptedView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  await expect(unencryptedView.getByRole('alert')).toContainText('no password protection')
+  await expect(unencryptedView.getByLabel('Private key', { exact: true })).toHaveCount(0)
+  await unencryptedView.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await app!.evaluate(({ dialog }) => { dialog.showSaveDialog = (async () => { throw new Error('Managed key generation must not open a save picker') }) as typeof dialog.showSaveDialog })
   await vault().getByRole('button', { name: 'Generate SSH key', exact: true }).click()
   const generator = page!.getByRole('dialog', { name: 'Generate SSH key', exact: true })
+  await generator.getByLabel('Passphrase', { exact: true }).fill(keyPassword)
+  await generator.getByLabel('Confirm passphrase', { exact: true }).fill(keyPassword)
   await generator.getByRole('button', { name: 'Generate key pair', exact: true }).click()
-  await generator.getByRole('button', { name: 'Add key to vault', exact: true }).click()
+  await expect(generator.getByRole('heading', { name: 'Your SSH key is ready', exact: true })).toBeVisible()
+  const generatedPath = (await generator.getByTestId('private-key-path').innerText()).trim()
+  assert.equal(path.dirname(generatedPath), path.join(dataDirectory, 'ssh-keys'))
+  await generator.getByRole('button', { name: 'Return to vault', exact: true }).click()
   await expect(generator).toHaveCount(0)
-  await expect(vault().getByRole('button', { name: 'Edit vault key vault_ed25519', exact: true })).toBeVisible()
+  const generatedKeys = (await page!.evaluate(() => window.sshHeaven.getLibrary())).keys.filter((key) => key.path === generatedPath)
+  assert.equal(generatedKeys.length, 1, 'Generation and Return to vault must not duplicate the registered key')
+  const generatedKey = generatedKeys[0]
+  await expect(vault().getByRole('button', { name: `Edit vault key ${generatedKey.name}`, exact: true })).toBeVisible()
   assert.ok((await stat(generatedPath)).isFile())
+  const encryptedBytes = await readFile(generatedPath)
+  assert.ok(ssh2.utils.parseKey(encryptedBytes) instanceof Error, 'Generated keys must be encrypted at rest')
   assert.ok(!(await page!.locator('body').innerText()).includes('PRIVATE KEY-----'))
+
+  const viewKeyButton = vault().getByRole('button', { name: `View key ${generatedKey.name}`, exact: true })
+  const keyView = page!.getByRole('dialog', { name: 'View SSH key', exact: true })
+  await viewKeyButton.click()
+  await keyView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  await expect(keyView.getByRole('alert')).toContainText('encryption password')
+  await keyView.getByLabel('Key encryption password', { exact: true }).fill('incorrect-key-password')
+  await keyView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  await expect(keyView.getByRole('alert')).toContainText('Unable to view this key')
+  await expect(keyView.getByLabel('Key encryption password', { exact: true })).toHaveValue('')
+  await expect(keyView.getByLabel('Private key', { exact: true })).toHaveCount(0)
+  await keyView.getByLabel('Key encryption password', { exact: true }).fill(keyPassword)
+  await keyView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  const privateField = keyView.getByLabel('Private key', { exact: true })
+  await expect(privateField).toBeVisible()
+  const decrypted = await privateField.inputValue()
+  const parsedIdentity = createPrivateKey(decrypted)
+  assert.equal(parsedIdentity.asymmetricKeyType, 'ed25519')
+  const publicText = await keyView.getByLabel('Public key', { exact: true }).inputValue()
+  const spki = createPublicKey(parsedIdentity).export({ type: 'spki', format: 'der' })
+  assert.deepEqual(spki.subarray(-32), Buffer.from(publicText.trim().split(' ')[1], 'base64').subarray(-32))
+  await expect(privateField).toHaveAttribute('readonly', '')
+  assert.ok(!(await page!.evaluate(() => window.sshHeaven.getVaultSnapshot()).then(JSON.stringify)).includes('PRIVATE KEY-----'), 'Vault snapshots must never contain decrypted material')
+  await page!.screenshot({ path: path.join(root, 'test-results', 'vault-key-view.png') })
+  await keyView.getByRole('button', { name: 'Hide key', exact: true }).click()
+  await expect(keyView).toHaveCount(0)
+  await viewKeyButton.click()
+  await expect(keyView.getByLabel('Key encryption password', { exact: true })).toHaveValue('')
+  await expect(keyView.getByLabel('Private key', { exact: true })).toHaveCount(0)
+  await keyView.getByLabel('Key encryption password', { exact: true }).fill(keyPassword)
+  await keyView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  await expect(privateField).toBeVisible()
+  await page!.clock.fastForward(31_000)
+  await expect(keyView).toHaveCount(0)
+
+  await viewKeyButton.click()
+  await keyView.getByLabel('Key encryption password', { exact: true }).fill(keyPassword)
+  await keyView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  await expect(privateField).toBeVisible()
+  // Toggle through the same renderer API used by the global Stream button;
+  // the key modal intentionally traps user focus while a secret is visible.
+  await page!.evaluate(() => document.querySelector<HTMLButtonElement>('button[aria-label="Stream mode"]')!.click())
+  await expect(keyView).toHaveCount(0)
+  await expect(viewKeyButton).toBeDisabled()
+  await expect(page!.locator('.vault-key-material')).toHaveCount(0)
+  await page!.getByRole('button', { name: 'Stream mode', exact: true }).click()
+
+  // A delayed native response must not restore material after the view closes.
+  await app!.evaluate(({ ipcMain }, channel) => {
+    const target = globalThis as unknown as { keyRevealHeld: boolean; releaseKeyReveal?: () => void; originalKeyReveal?: (event: unknown, id: string, password: string) => unknown }
+    target.originalKeyReveal = (ipcMain as unknown as { _invokeHandlers: Map<string, (event: unknown, id: string, password: string) => unknown> })._invokeHandlers.get(channel)!
+    target.keyRevealHeld = false
+    ipcMain.removeHandler(channel)
+    ipcMain.handle(channel, async (event, id, password) => {
+      const result = await target.originalKeyReveal!(event, id, password)
+      target.keyRevealHeld = true
+      await new Promise<void>((resolve) => { target.releaseKeyReveal = resolve })
+      return result
+    })
+  }, channels.revealVaultKey)
+  await viewKeyButton.click()
+  await keyView.getByLabel('Key encryption password', { exact: true }).fill(keyPassword)
+  await keyView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  await expect.poll(() => app!.evaluate(() => (globalThis as unknown as { keyRevealHeld: boolean }).keyRevealHeld)).toBe(true)
+  await expect(keyView.getByLabel('Key encryption password', { exact: true })).toHaveValue('')
+  await keyView.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await app!.evaluate(({ ipcMain }, channel) => {
+    const target = globalThis as unknown as { releaseKeyReveal?: () => void; originalKeyReveal?: (event: unknown, id: string, password: string) => unknown }
+    target.releaseKeyReveal?.()
+    ipcMain.removeHandler(channel); ipcMain.handle(channel, target.originalKeyReveal!)
+  }, channels.revealVaultKey)
+  await expect(viewKeyButton).toBeEnabled()
+  await expect(keyView).toHaveCount(0)
+  await expect(page!.locator('.vault-key-material')).toHaveCount(0)
+  assert.ok(!(await readFile(path.join(dataDirectory, 'settings.json'), 'utf8')).includes(keyPassword), 'Key passwords must never be persisted')
+
+  await viewKeyButton.click()
+  await keyView.getByLabel('Key encryption password', { exact: true }).fill(keyPassword)
+  await keyView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  await expect(privateField).toBeVisible()
+  await page!.evaluate(() => window.sshHeaven.lockVault())
+  await expect(keyView).toHaveCount(0)
+  await expect(page!.locator('.vault-key-material')).toHaveCount(0)
+  const keyDeniedWhileLocked = await page!.evaluate(({ id, password }) => window.sshHeaven.revealVaultKey(id, password).then(() => false, () => true), { id: generatedKey.id, password: keyPassword })
+  assert.equal(keyDeniedWhileLocked, true, 'A correct key password does not bypass the vault PIN')
+  await unlock()
+  await vault().getByRole('button', { name: /^SSH keys/ }).click()
+  await viewKeyButton.click()
+  await keyView.getByLabel('Key encryption password', { exact: true }).fill(keyPassword)
+  await keyView.getByRole('button', { name: 'Reveal key', exact: true }).click()
+  await expect(privateField).toBeVisible()
+  await page!.evaluate(() => document.querySelector<HTMLButtonElement>('button[aria-label="Open home"]')!.click())
+  await expect(keyView).toHaveCount(0)
+  await expect(page!.locator('.vault-key-material')).toHaveCount(0)
+  assert.equal((await page!.evaluate(() => window.sshHeaven.getVaultState())).unlocked, false)
+  await openVault(); await unlock()
+  await vault().getByRole('button', { name: /^SSH keys/ }).click()
   await vault().getByRole('button', { name: 'Remove vault key Existing vault identity', exact: true }).click()
   const removal = page!.getByRole('dialog', { name: 'Remove SSH key from library?', exact: true })
   await removal.getByRole('button', { name: 'Keep key', exact: true }).click()
@@ -263,7 +388,7 @@ try {
   await page!.screenshot({ path: path.join(root, 'test-results', 'vault-workspace.png') })
   assert.equal(await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), false)
   assert.deepEqual(errors, [])
-  console.log('Background Vault E2E passed: five-digit PIN setup/change/disable, native denial and delayed-response guards, auto-hiding reveal/native copy, Stream privacy, password/key management, lock on leave/native minimize lifecycle event/restart, and Quick connect while locked. The window stayed hidden; physical minimize/focus was not exercised.')
+  console.log('Background Vault E2E passed: five-digit PIN management; encrypted managed key generation; key-password-gated, read-only decrypted PEM/public-key identity; key reentry, auto-hide, Stream/lock/leave/late-response clearing; password/native-copy management; native minimize lifecycle binding and restart; Quick connect while locked. All windows stayed hidden.')
 } catch (error) {
   if (page && app) await page.screenshot({ path: path.join(root, 'test-results', 'vault-failure.png') }).catch(() => {})
   throw error

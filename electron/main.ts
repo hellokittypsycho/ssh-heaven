@@ -1,4 +1,6 @@
 import path from 'node:path'
+import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, nativeImage, protocol, safeStorage, shell, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron'
 import { stat } from 'node:fs/promises'
 import { channels } from './channels'
@@ -7,7 +9,7 @@ import { AppStore, validateProfile } from './store'
 import { confirmReplace, downloadFile, downloadFiles, uploadFiles, uploadFolder, uploadDropped } from './transfers'
 import { TransferManager } from './transfer-manager'
 import { errorMessage, record } from './validation'
-import { generateKeyFiles, validateKeyRequest } from './keygen'
+import { ManagedKeyService } from './managed-keys'
 import { CredentialVault, credentialBinding, type CredentialCipher } from './credentials'
 import { RemoteEditorService } from './remote-editor'
 import { bindWindowChrome, registerWindowChromeIpc, windowChromeOptions } from './window-chrome'
@@ -27,6 +29,7 @@ let store: AppStore
 let transfers: TransferManager
 let quitting = false
 let cleanupFinished = false
+let cleanupPromise: Promise<void> | undefined
 let generatingKey = false
 let vault: CredentialVault
 let vaultManager: VaultManager
@@ -37,6 +40,7 @@ let metrics: MetricsService
 let tunnels: TunnelManager
 let backups: BackupService
 let updates: UpdateService
+let managedKeys: ManagedKeyService
 let mcp: McpService
 let wallpaper: WallpaperService
 let choosingWallpaper = false
@@ -90,6 +94,26 @@ async function closeOwner(ownerId: number): Promise<void> {
   service.disconnectOwner(ownerId)
 }
 
+function cleanlyStopWorkspace(): Promise<void> {
+  if (cleanupFinished) return Promise.resolve()
+  cleanupPromise ??= Promise.allSettled([transfers?.dispose(), groupCommands?.dispose(), tunnels?.dispose(), mcp?.dispose(), vaultManager?.dispose()]).then(() => {
+    backups?.dispose()
+    service?.dispose()
+    cleanupFinished = true
+  })
+  return cleanupPromise
+}
+
+async function launchUpdateInstaller(filename: string): Promise<void> {
+  if (process.platform !== 'win32') throw new Error('In-app installation currently supports Windows.')
+  const child = spawn(filename, ['/S', '--updated', '--force-run'], { detached: true, windowsHide: true, stdio: 'ignore' })
+  await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
+  child.unref()
+  // The installer starts only after the verified download and explicit install
+  // action. The workspace has already finished closing its remote handles.
+  setImmediate(() => app.quit())
+}
+
 function registerIpc(): void {
   registerWindowChromeIpc(owner)
   ipcMain.handle(channels.getVaultState, (event) => vaultManager.getState(owner(event).webContents.id))
@@ -105,6 +129,20 @@ function registerIpc(): void {
   ipcMain.handle(channels.forgetVaultPassword, (event, id) => vaultManager.forgetPassword(owner(event).webContents.id, id))
   ipcMain.handle(channels.saveVaultKey, (event, key) => vaultManager.saveKey(owner(event).webContents.id, key))
   ipcMain.handle(channels.deleteVaultKey, (event, id) => vaultManager.deleteKey(owner(event).webContents.id, id))
+  ipcMain.handle(channels.revealVaultKey, async (event, id, password) => {
+    const ownerId = owner(event).webContents.id
+    const grant = vaultManager.authorizeRequest(ownerId)
+    if (typeof id !== 'string') throw new Error('Choose a saved SSH key.')
+    const key = store.getLibrary().keys.find((item) => item.id === id)
+    if (!key) throw new Error('This SSH key is no longer saved.')
+    const guard = () => {
+      owner(event); grant()
+      if (!store.getLibrary().keys.some((item) => item.id === id && item.path === key.path)) throw new Error('The saved SSH key changed while opening it.')
+    }
+    const revealed = await managedKeys.view(key.path, password, guard)
+    guard()
+    return revealed
+  })
   ipcMain.handle(channels.getWallpaperState, (event) => { owner(event); return wallpaper.get() })
   ipcMain.handle(channels.chooseWallpaper, async (event) => {
     const window = owner(event)
@@ -152,6 +190,9 @@ function registerIpc(): void {
   ipcMain.handle(channels.getUpdateState, (event) => { owner(event); return updates.getState() })
   ipcMain.handle(channels.checkForUpdates, (event) => { owner(event); return updates.check() })
   ipcMain.handle(channels.openUpdateDownload, (event) => { owner(event); return updates.openDownload() })
+  ipcMain.handle(channels.downloadUpdate, (event) => { owner(event); return updates.download() })
+  ipcMain.handle(channels.cancelUpdateDownload, (event) => { owner(event); return updates.cancelDownload() })
+  ipcMain.handle(channels.installUpdate, (event) => { owner(event); return updates.install() })
   ipcMain.handle(channels.exportBackup, async (event, request) => {
     const window = owner(event)
     const result = await dialog.showSaveDialog(window, { title: 'Save encrypted backup', buttonLabel: 'Save backup', defaultPath: 'SSH Heaven.sshbackup', filters: [{ name: 'SSH Heaven encrypted backup', extensions: ['sshbackup'] }] })
@@ -192,18 +233,15 @@ function registerIpc(): void {
   ipcMain.handle(channels.readRemoteFile, (event, id, filename) => editor.read(owner(event).webContents.id, id, filename))
   ipcMain.handle(channels.saveRemoteFile, (event, id, filename, content, version) => editor.save(owner(event).webContents.id, id, filename, content, version))
   ipcMain.handle(channels.generateKey, async (event, value) => {
-    const window = owner(event)
-    const request = validateKeyRequest(value)
+    owner(event)
     if (generatingKey) throw new Error('Another SSH key is being generated. Wait for it to finish.')
     generatingKey = true
     try {
-      const selection = await dialog.showSaveDialog(window, {
-        title: 'Save SSH private key', buttonLabel: 'Generate and save',
-        defaultPath: path.join(app.getPath('home'), '.ssh', `id_${request.type === 'rsa' ? 'rsa' : 'ed25519'}`)
-      })
-      if (selection.canceled || !selection.filePath) return null
-      const generated = await generateKeyFiles(request, selection.filePath, require.resolve('ssh2'))
+      const generated = await managedKeys.generate(value, () => { owner(event) })
       approvedKeyPaths.add(keyPath(generated.privateKeyPath))
+      owner(event)
+      const comment = typeof value?.comment === 'string' ? value.comment.trim().slice(0, 100) : ''
+      await store.saveLibraryItem('key', { id: randomUUID(), name: comment || `${generated.type === 'ed25519' ? 'Ed25519' : 'RSA'} SSH key`, path: generated.privateKeyPath })
       return generated
     } finally { generatingKey = false }
   })
@@ -342,6 +380,7 @@ app.whenReady().then(async () => {
   protocol.handle('ssh-heaven-wallpaper', (request) => wallpaper.handleRequest(request))
   store = new AppStore(path.join(app.getPath('userData'), 'settings.json'))
   await store.load()
+  managedKeys = new ManagedKeyService(path.join(app.getPath('userData'), 'ssh-keys'), require.resolve('ssh2'))
   const credentialCipher: CredentialCipher = {
     async available() {
       const available = await safeStorage.isAsyncEncryptionAvailable()
@@ -374,7 +413,16 @@ app.whenReady().then(async () => {
   metrics = new MetricsService(service)
   tunnels = new TunnelManager(service, (id, event) => send(id, channels.tunnel, event))
   backups = new BackupService(store, vault, path.join(app.getPath('userData'), 'backup-keys'), keyAllowed)
-  updates = new UpdateService(app.getVersion(), (event) => { if (mainWindow && !mainWindow.isDestroyed()) send(mainWindow.webContents.id, channels.update, event) }, (url) => shell.openExternal(url))
+  updates = new UpdateService(app.getVersion(), (event) => { if (mainWindow && !mainWindow.isDestroyed()) send(mainWindow.webContents.id, channels.update, event) }, (url) => shell.openExternal(url), undefined, {
+    directory: path.join(app.getPath('userData'), 'updates'),
+    beforeInstall: async () => {
+      if (generatingKey) throw new Error('Wait for SSH key generation to finish before installing.')
+      if (!mainWindow || mainWindow.isDestroyed()) throw new Error('The application window is no longer available.')
+      // Stop live work first, retaining usable services if launching fails.
+      await closeOwner(mainWindow.webContents.id)
+    },
+    launchInstaller: launchUpdateInstaller
+  })
   // Release checks use only public metadata. Local development stays offline.
   if (app.isPackaged) await updates.initialize(path.join(app.getAppPath(), 'build', 'release-config.json'))
   mcp = new McpService({
@@ -404,16 +452,12 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', (event) => {
+  updates?.dispose()
   if (cleanupFinished || !transfers) { service?.dispose(); return }
   event.preventDefault()
   if (quitting) return
   quitting = true
   // Keep the connection alive just long enough to close stream handles and
   // remove temporary siblings before tearing down the SSH transport.
-  void Promise.all([transfers.dispose(), groupCommands?.dispose(), tunnels?.dispose(), mcp?.dispose(), vaultManager?.dispose()]).finally(() => {
-    backups?.dispose()
-    service?.dispose()
-    cleanupFinished = true
-    app.quit()
-  })
+  void cleanlyStopWorkspace().finally(() => app.quit())
 })
