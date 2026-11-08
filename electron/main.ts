@@ -1,8 +1,8 @@
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, nativeImage, protocol, safeStorage, shell, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron'
-import { stat } from 'node:fs/promises'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, nativeImage, Notification, protocol, safeStorage, shell, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron'
+import { stat, writeFile } from 'node:fs/promises'
 import { channels } from './channels'
 import { SshService } from './ssh-service'
 import { AppStore, validateProfile } from './store'
@@ -115,6 +115,31 @@ async function launchUpdateInstaller(filename: string): Promise<void> {
 }
 
 function registerIpc(): void {
+  ipcMain.handle(channels.getRemoteProperties, (event, id, path) => service.getRemoteProperties(owner(event).webContents.id, id, path))
+  ipcMain.handle(channels.chmodRemote, (event, id, path, mode, version) => service.chmodRemote(owner(event).webContents.id, id, path, mode, version))
+  ipcMain.handle(channels.listScriptRuns, (event) => service.listScriptRuns(owner(event).webContents.id))
+  const notifiedRuns = new Set<string>()
+  ipcMain.handle(channels.notifyScriptRun, (event, id) => {
+    const run = service.listScriptRuns(owner(event).webContents.id).find((item) => item.id === id)
+    if (!run || run.status === 'running' || notifiedRuns.has(run.id)) return
+    notifiedRuns.add(run.id)
+    if (notifiedRuns.size > 500) notifiedRuns.delete(notifiedRuns.values().next().value!)
+    if (!backgroundTest && Notification.isSupported()) new Notification({ title: 'SSH Heaven · Script finished', body: run.status === 'completed' ? 'Script completed successfully.' : run.status === 'disconnected' ? 'Connection ended before the script finished.' : `Script failed${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ''}.` }).show()
+  })
+  ipcMain.handle(channels.exportTerminalLog, async (event, text) => {
+    const window = owner(event)
+    if (typeof text !== 'string' || Buffer.byteLength(text) > 16 * 1024 * 1024) throw new Error('Terminal exports support up to 16 MiB of text.')
+    const result = await dialog.showSaveDialog(window, { title: 'Export terminal log', defaultPath: `SSH Heaven ${new Date().toISOString().replace(/[:.]/g, '-')}.log`, filters: [{ name: 'Terminal log', extensions: ['log', 'txt'] }] })
+    if (result.canceled || !result.filePath) return false
+    owner(event)
+    await writeFile(result.filePath, text, { encoding: 'utf8', mode: 0o600 })
+    return true
+  })
+  ipcMain.handle(channels.pauseTransfer, (event, id) => transfers.pause(owner(event).webContents.id, id))
+  ipcMain.handle(channels.resumeTransfer, (event, id) => transfers.resume(owner(event).webContents.id, id))
+  ipcMain.handle(channels.moveTransfer, (event, id, direction) => transfers.move(owner(event).webContents.id, id, direction))
+  ipcMain.handle(channels.getTransferBandwidthLimit, (event) => transfers.getBandwidthLimit(owner(event).webContents.id))
+  ipcMain.handle(channels.setTransferBandwidthLimit, (event, limit) => transfers.setBandwidthLimit(owner(event).webContents.id, limit))
   registerWindowChromeIpc(owner)
   ipcMain.handle(channels.getVaultState, (event) => vaultManager.getState(owner(event).webContents.id))
   ipcMain.handle(channels.setupVaultPin, (event, pin) => vaultManager.setup(owner(event).webContents.id, pin))
@@ -317,7 +342,7 @@ function registerIpc(): void {
     // Terminal input can race a remote disconnect. Never let a late keystroke crash the host process.
     try { service.write(owner(event).webContents.id, id, data) } catch { /* Session status is reported by the transport. */ }
   })
-  ipcMain.handle(channels.runTerminalScript, (event, id, command) => service.runTerminalScript(owner(event).webContents.id, id, command))
+  ipcMain.handle(channels.runTerminalScript, (event, id, command, details) => service.runTerminalScript(owner(event).webContents.id, id, command, details))
   ipcMain.on(channels.resize, (event, id, cols, rows) => {
     try { service.resize(owner(event).webContents.id, id, cols, rows) } catch { /* Ignore resize events for closed sessions. */ }
   })
@@ -399,6 +424,7 @@ app.whenReady().then(async () => {
   })
   await vaultManager.load()
   service = new SshService(store, {
+    scriptRun: (id, event) => send(id, channels.scriptRun, event),
     data: (id, event) => send(id, channels.data, event),
     status: (id, event) => {
       send(id, channels.status, event)

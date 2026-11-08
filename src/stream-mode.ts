@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { useStreamRules } from './stream-rules'
 
 export const STREAM_MODE_KEY = 'ssh-heaven:stream-mode'
 function stored(): boolean {
@@ -18,8 +19,9 @@ export function setStreamMode(value: boolean): void {
 }
 function toggle(): void { setStreamMode(!enabled) }
 function subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener) } }
-export function useStreamMode(): { enabled: boolean; toggle: () => void } {
-  return { enabled: useSyncExternalStore(subscribe, isStreamModeEnabled, () => false), toggle }
+export function useStreamMode() {
+  const rules = useStreamRules()
+  return { enabled: useSyncExternalStore(subscribe, isStreamModeEnabled, () => false), toggle, rules }
 }
 apply()
 if (typeof window !== 'undefined') {

@@ -1,4 +1,4 @@
-import { findIPRanges, redactIPs } from '../../shared/ip-redaction'
+import { findSensitiveRanges as findIPRanges, redactSensitiveText as redactIPs } from '../stream-rules'
 import { isStreamModeEnabled } from '../stream-mode'
 
 function text(value: unknown): unknown {

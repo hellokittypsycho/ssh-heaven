@@ -164,6 +164,10 @@ html[data-stream-mode="true"] .ssh-terminal-surface:has(.ssh-terminal-host:not([
 
 /* Keep search usable without taking the final terminal row in small panes. */
 @container ssh-terminal (max-width: 420px) {
+  .ssh-terminal-toolbar { flex-wrap: nowrap; gap: 4px; padding: 5px 8px; }
+  .ssh-terminal-toolbar > .ssh-terminal-tool-group .ssh-terminal-button { width: 28px; padding: 3px; }
+  .ssh-terminal-toolbar > .ssh-terminal-tool-group .ssh-terminal-button > span,
+  .ssh-terminal-font-label { display: none; }
   .ssh-terminal-search {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;

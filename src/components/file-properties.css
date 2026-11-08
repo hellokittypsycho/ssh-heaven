@@ -1,0 +1,25 @@
+.modal.file-properties-modal { width:600px; }
+.file-properties-heading { display:flex; align-items:center; gap:13px; min-width:0; margin-bottom:22px; }
+.file-properties-heading > svg { flex-shrink:0; color:var(--accent); }
+.file-properties-heading > div { min-width:0; }
+.file-properties-heading h3 { font-size:16px; font-weight:550; color:var(--text); }
+.file-properties-heading p { margin-top:6px; overflow-wrap:anywhere; font:11px/1.7 "Cascadia Code",Consolas,monospace; color:var(--text-muted); }
+.file-properties-details { display:grid; grid-template-columns:1fr 1fr; gap:19px 24px; padding:18px; margin-bottom:24px; border:1px solid var(--border); border-radius:11px; background:var(--surface-raised); }
+.file-properties-details dt { margin-bottom:6px; color:var(--text-muted); font-size:11px; }
+.file-properties-details dd { margin:0; color:var(--text); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.file-properties-details dd span { color:var(--text-muted); font-size:10px; }
+.file-permissions-heading { display:flex; align-items:center; justify-content:space-between; gap:15px; margin-bottom:13px; }
+.file-permissions-heading h3 { font-size:14px; font-weight:550; color:var(--text); }
+.file-permissions-heading label { display:flex; align-items:center; gap:9px; color:var(--text-muted); font-size:12px; }
+.file-permissions-heading input { width:80px; text-align:center; font-family:"Cascadia Code",Consolas,monospace; font-size:13px; }
+.file-permissions-matrix { display:grid; grid-template-columns:minmax(90px,1fr) repeat(3,1fr); border:1px solid var(--border); border-radius:10px; overflow:hidden; font-size:12px; }
+.file-permissions-matrix > strong { padding:12px 4px; text-align:center; color:var(--text-muted); font-weight:500; font-size:11px; }
+.file-permissions-row { display:contents; }
+.file-permissions-row > span,.file-permissions-row > label { display:flex; align-items:center; padding:12px; border-top:1px solid var(--border); color:var(--text-secondary); }
+.file-permissions-row label { justify-content:center; }
+.file-permissions-row input { width:15px; height:15px; margin:0; accent-color:var(--accent); }
+.file-permissions-hint { margin-top:12px; font-size:11px; line-height:1.8; color:var(--text-muted); }
+.file-properties-error-hint { display:block; margin-top:7px; font-size:11px; }
+.file-properties-notice { padding:11px 13px; margin-bottom:16px; border:1px solid var(--border); border-radius:9px; background:var(--success-soft); color:var(--success); font-size:12px; }
+.file-properties-loading { display:flex; align-items:center; justify-content:center; gap:12px; min-height:180px; color:var(--text-muted); font-size:13px; }
+@media(max-height:750px) { .file-properties-details { gap:12px 20px; padding:14px; margin-bottom:18px; }.file-properties-heading { margin-bottom:16px; }.file-permissions-row > span,.file-permissions-row > label { padding-top:9px; padding-bottom:9px; } }

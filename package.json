@@ -1,6 +1,6 @@
 {
   "name": "ssh-heaven",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "A focused desktop SSH terminal and SFTP workspace.",
   "author": "SSH Heaven",
@@ -41,7 +41,11 @@
     "dist:win": "npm run build && electron-builder --win nsis",
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "npm run build && electron-builder --linux",
-    "dist:win:signed": "node scripts/release-win.mjs"
+    "dist:win:signed": "node scripts/release-win.mjs",
+    "test:qol": "tsx tests/qol.e2e.ts",
+    "test:file-workflow": "tsx tests/file-workflow.e2e.ts",
+    "test:transfer-qol": "tsx tests/transfer-qol.e2e.ts",
+    "test:release-download": "tsx tests/release-download.e2e.ts"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

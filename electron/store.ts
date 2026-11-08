@@ -7,7 +7,7 @@ import { identifier, integer, optionalText, record, textValue } from './validati
 export function validateProfile(value: unknown): HostProfile {
   const input = record(value, 'host profile')
   const authType = input.authType
-  if (authType !== 'password' && authType !== 'privateKey') throw new Error('Choose password or private key authentication.')
+  if (authType !== 'password' && authType !== 'privateKey' && authType !== 'agent') throw new Error('Choose password, private key, or SSH agent authentication.')
   const host = textValue(input.host, 'hostname', 253).trim()
   const username = textValue(input.username, 'username', 256).trim()
   const name = textValue(input.name, 'host name', 100).trim()
@@ -18,8 +18,14 @@ export function validateProfile(value: unknown): HostProfile {
   if (jumpHostId === input.id) throw new Error('A host cannot use itself as a jump host.')
   const tmuxSession = input.tmuxSession ? textValue(input.tmuxSession, 'tmux session', 64) : undefined
   if (tmuxSession && !/^[a-zA-Z0-9_-]+$/.test(tmuxSession)) throw new Error('Use letters, numbers, underscores, or dashes for the tmux session.')
+  const color = input.color ? textValue(input.color, 'host color', 7) : undefined
+  if (color && !/^#[a-f\d]{6}$/i.test(color)) throw new Error('Choose a valid host color.')
+  const icon = input.icon ? textValue(input.icon, 'host icon', 20) as HostProfile['icon'] : undefined
+  if (icon && !['server', 'database', 'cloud', 'code', 'shield', 'globe'].includes(icon)) throw new Error('Choose a supported host icon.')
+  const notes = input.notes ? textValue(input.notes, 'host notes', 2000) : undefined
   return {
     id: identifier(input.id, 'profile identifier'), name, host,
+    ...(color ? { color } : {}), ...(icon ? { icon } : {}), ...(notes ? { notes } : {}),
     port: integer(input.port, 'port', 1, 65535), username, authType,
     ...(authType === 'privateKey' ? { privateKeyPath: optionalText(input.privateKeyPath, 'private key path', 32768) } : {}),
     ...(input.group ? { group: optionalText(input.group, 'group', 100) } : {}),

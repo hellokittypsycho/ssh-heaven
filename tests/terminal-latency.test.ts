@@ -16,6 +16,7 @@ async function harness(delay = 0) {
   const timers = new Set<ReturnType<typeof setTimeout>>()
   let silent = false
   let remoteShell: ServerChannel | undefined
+  let input = ''
   const server = new ssh2.Server({ hostKeys: [hostKey] }, (client) => {
     clients.add(client)
     // ssh2 exposes this server method at runtime, but its Connection typings
@@ -31,6 +32,7 @@ async function harness(delay = 0) {
         const channel = accepted()
         remoteShell = channel
         channel.on('data', (data: Buffer) => {
+          input += data.toString('utf8')
           if (silent) return
           if (['OUTPUT_FLOOD', 'OUTPUT_FLOOD_CLOSE'].includes(data.toString())) {
             for (let index = 0; index < 2000; index++) channel.write('x')
@@ -76,6 +78,16 @@ async function harness(delay = 0) {
     pauseInput() { remoteShell?.pause() },
     resumeInput() { remoteShell?.resume() },
     received: () => received,
+    async finishScript(code = 0) {
+      const deadline = Date.now() + 2000
+      while (!input.endsWith('\r')) { assert.ok(Date.now() < deadline, 'queued script did not reach the remote channel'); await new Promise((resolve) => setTimeout(resolve, 5)) }
+      const encoded = input.match(/ssh-heaven;((?:\\[0-7]{3})+);%s/)!?.[1]
+      assert.ok(encoded, 'the remote fixture must read the actual nonce from the received wrapper')
+      const nonce = Buffer.from(Array.from(encoded.matchAll(/\\([0-7]{3})/g), (match) => parseInt(match[1], 8))).toString('ascii')
+      remoteShell!.write(`\x1b]777;ssh-heaven;${nonce};${code}\x07`)
+      while (service.listScriptRuns(owner).some((run) => run.status === 'running')) { assert.ok(Date.now() < deadline); await new Promise((resolve) => setTimeout(resolve, 5)) }
+      input = ''
+    },
     async flood(close = false) {
       received = ''; events = 0
       service.write(owner, sessionId, close ? 'OUTPUT_FLOOD_CLOSE' : 'OUTPUT_FLOOD')
@@ -160,10 +172,13 @@ test('terminal scripts send printable ASCII through Readline, retain exact UTF-8
     const payload = h.received()
     assert.match(payload, /^[\x20-\x7e]+\r$/)
     assert.match(payload, /^sh -c '/)
-    assert.ok(payload.includes('printf .); exec sh -c "${s%.}"'))
-    const decoded = Buffer.from(Array.from(payload.matchAll(/\\([0-7]{3})/g), (match) => parseInt(match[1], 8))).toString('utf8')
+    assert.ok(payload.includes('printf .); trap '))
+    assert.ok(payload.includes('sh -c "${s%.}"; exit $?'))
+    const encodedScript = payload.match(/(?:\\[0-7]{3})+/)![0]
+    const decoded = Buffer.from(Array.from(encodedScript.matchAll(/\\([0-7]{3})/g), (match) => parseInt(match[1], 8))).toString('utf8')
     assert.equal(decoded, command.replace(/\r\n/g, '\n'))
     assert.equal(decoded.endsWith('\n\n'), true)
+    await h.finishScript()
     for (const script of ['', '   ', 'x'.repeat(32769), 'echo a\0bad', 'echo a\x1b[2J', 'echo a\x03bad', 'echo a\x7fbad', 'echo a\rbad', 'echo a\ud800']) await assert.rejects(h.service.runTerminalScript(h.owner, h.sessionId, script), /script|Script|control|Unicode/)
     await assert.rejects(h.service.runTerminalScript(h.owner + 1, h.sessionId, 'echo unauthorized'), /another window/)
     h.service.disconnect(h.owner, h.sessionId)
@@ -185,6 +200,7 @@ test('terminal script submission waits for SSH channel backpressure and reports 
     h.resumeInput()
     await submitting
     assert.equal(settled, true)
+    await h.finishScript()
     // Fill another channel window and close while its script is still queued.
     h.pauseInput(); fillWindow()
     const disconnected = h.service.runTerminalScript(h.owner, h.sessionId, 'echo disconnected-while-queued')

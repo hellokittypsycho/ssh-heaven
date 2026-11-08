@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import ssh2, { type Client as SshClient, type ClientChannel, type ConnectConfig, type SFTPWrapper } from 'ssh2'
-import type { ConnectRequest, DirectoryListing, HostKeyChallenge, HostProfile, RemoteEntry, SessionInfo, SessionStatus, TerminalData } from '../shared/types'
+import ssh2, { type Client as SshClient, type ClientChannel, type ConnectConfig, type SFTPWrapper, type Stats } from 'ssh2'
+import type { ConnectRequest, DirectoryListing, HostKeyChallenge, HostProfile, RemoteEntry, RemoteProperties, ScriptRun, SessionInfo, SessionStatus, TerminalData } from '../shared/types'
 import { AppStore, validateProfile } from './store'
 import { errorMessage, identifier, integer, record, remotePath } from './validation'
+import { terminalScript, type ScriptCompletionParser } from './terminal-script'
 
 const { Client } = ssh2
 
@@ -12,6 +13,7 @@ export interface SessionEvents {
   data(ownerId: number, event: TerminalData): void
   status(ownerId: number, event: SessionStatus): void
   hostKey(ownerId: number, event: HostKeyChallenge): void
+  scriptRun?(ownerId: number, event: ScriptRun): void
 }
 
 export interface ExecuteRequest { sessionId: string; profile: HostProfile; command: string; password?: string; passphrase?: string }
@@ -38,6 +40,21 @@ interface Session {
   rejectConnect?: (error: Error) => void
   flushOutput?: () => void
   beforeInput?: () => void
+  activeScript?: string
+  scriptParser?: ScriptCompletionParser
+}
+
+export function resolveSshAgent(platform: NodeJS.Platform = process.platform, environment: NodeJS.ProcessEnv = process.env): string {
+  if (platform === 'win32') return '\\\\.\\pipe\\openssh-ssh-agent'
+  const socket = environment.SSH_AUTH_SOCK
+  if (!socket || socket.length > 32768 || socket.includes('\0') || !path.posix.isAbsolute(socket)) throw new Error('Start an SSH agent and set SSH_AUTH_SOCK before using agent authentication.')
+  return socket
+}
+function agentConfig(agent: string): ConnectConfig { return { agent, agentForward: false, authHandler: ['agent'] } }
+function properties(filename: string, attrs: Stats): RemoteProperties {
+  const mode = attrs.mode ?? 0, kind = mode & 0o170000
+  const result = { path: filename, type: kind === 0o100000 ? 'file' as const : kind === 0o040000 ? 'directory' as const : kind === 0o120000 ? 'symlink' as const : 'other' as const, size: attrs.size ?? 0, mode, uid: attrs.uid, gid: attrs.gid, accessed: attrs.atime ?? 0, modified: attrs.mtime ?? 0 }
+  return { ...result, version: createHash('sha256').update(JSON.stringify(result)).digest('hex') }
 }
 
 interface Challenge {
@@ -100,8 +117,28 @@ export class SshService {
   private readonly executions = new Map<string, { ownerId: number; close(): void }>()
   private readonly closedListeners = new Set<(ownerId: number, sessionId: string) => void>()
   private readonly preparing = new Map<string, { ownerId: number; canceled: boolean }>()
+  private readonly scriptRuns = new Map<string, { ownerId: number; run: ScriptRun }>()
 
-  constructor(private readonly store: AppStore, private readonly events: SessionEvents, private readonly credentialResolver?: CredentialResolver) {}
+  constructor(private readonly store: AppStore, private readonly events: SessionEvents, private readonly credentialResolver?: CredentialResolver, private readonly options: { agentPath?: () => string } = {}) {}
+
+  private agentPath(): string { return this.options.agentPath?.() ?? resolveSshAgent() }
+
+  listScriptRuns(ownerId: number): ScriptRun[] { return [...this.scriptRuns.values()].filter((item) => item.ownerId === ownerId).map((item) => ({ ...item.run })).sort((a, b) => b.startedAt - a.startedAt).slice(0, 100) }
+
+  getScriptRun(ownerId: number, value: unknown): ScriptRun {
+    const item = this.scriptRuns.get(identifier(value, 'script run identifier'))
+    if (!item || item.ownerId !== ownerId) throw new Error('This script run is not available to this window.')
+    return { ...item.run }
+  }
+
+  private finishScript(session: Session, status: ScriptRun['status'], exitCode?: number, message?: string): void {
+    const item = session.activeScript ? this.scriptRuns.get(session.activeScript) : undefined
+    if (!item || item.run.status !== 'running') return
+    const finishedAt = Date.now()
+    item.run = { ...item.run, status, finishedAt, durationMs: Math.max(0, finishedAt - item.run.startedAt), ...(exitCode === undefined ? {} : { exitCode }), ...(message ? { message } : {}) }
+    session.activeScript = undefined
+    this.events.scriptRun?.(item.ownerId, { ...item.run })
+  }
 
   onSessionClosed(listener: (ownerId: number, sessionId: string) => void): () => void {
     this.closedListeners.add(listener)
@@ -155,8 +192,8 @@ export class SshService {
     for (const hop of this.jumpChain(profile)) {
       if (session.closed) return
       signal?.throwIfAborted()
-      if (!this.credentialResolver) throw new Error(`Saved credentials are required for jump host ${hop.name}.`)
-      const resolved = await this.credentialResolver(hop)
+      if (hop.authType !== 'agent' && !this.credentialResolver) throw new Error(`Saved credentials are required for jump host ${hop.name}.`)
+      const resolved = hop.authType === 'agent' ? {} : await this.credentialResolver!(hop)
       if (session.closed) return
       signal?.throwIfAborted()
       let privateKey: Buffer | undefined
@@ -168,7 +205,8 @@ export class SshService {
         if (!metadata.isFile() || metadata.size > 1024 * 1024) throw new Error(`Choose a valid private key for jump host ${hop.name}.`)
         privateKey = await readFile(hop.privateKeyPath)
         if (passphrase === undefined && typeof config.passphrase === 'string' && profile.privateKeyPath && path.resolve(profile.privateKeyPath) === path.resolve(hop.privateKeyPath)) passphrase = config.passphrase
-      } else if (password === undefined) throw new Error(`Jump host ${hop.name} has no saved password. Remember its password before using this route.`)
+      } else if (hop.authType === 'password' && password === undefined) throw new Error(`Jump host ${hop.name} has no saved password. Remember its password before using this route.`)
+      const agent = hop.authType === 'agent' ? this.agentPath() : undefined
       if (session.closed) return
       signal?.throwIfAborted()
       const sock = previous ? await new Promise<ClientChannel>((resolve, reject) => previous!.forwardOut('127.0.0.1', 0, hop.host, hop.port, (error, channel) => error ? reject(error) : resolve(channel))) : undefined
@@ -185,7 +223,7 @@ export class SshService {
         jump.connect({
           host: hop.host, port: hop.port, username: hop.username, sock,
           readyTimeout: 150_000, keepaliveInterval: 15_000, keepaliveCountMax: 3,
-          ...(hop.authType === 'privateKey' ? { privateKey, passphrase } : { password }),
+          ...(hop.authType === 'privateKey' ? { privateKey, passphrase } : hop.authType === 'agent' ? agentConfig(agent!) : { password }),
           hostVerifier: (key: Buffer, callback: (trusted: boolean) => void) => {
             phase?.('verifying')
             this.verifyHost(session, hop.host, hop.port, key).then(callback, () => callback(false))
@@ -214,6 +252,7 @@ export class SshService {
     const passphrase = credential(value.passphrase, 'key passphrase')
     signal.throwIfAborted()
     let privateKey: Buffer | undefined
+    const agent = profile.authType === 'agent' ? this.agentPath() : undefined
     if (profile.authType === 'privateKey') {
       if (!profile.privateKeyPath || !path.isAbsolute(profile.privateKeyPath)) throw new Error('Choose a private key file for this host.')
       const file = await stat(profile.privateKeyPath)
@@ -281,7 +320,7 @@ export class SshService {
         void this.connectRoute(session, profile, {
           host: profile.host, port: profile.port, username: profile.username,
           readyTimeout: 150_000, keepaliveInterval: 15_000, keepaliveCountMax: 3,
-          ...(profile.authType === 'privateKey' ? { privateKey, passphrase } : { password: password ?? '' }),
+          ...(profile.authType === 'privateKey' ? { privateKey, passphrase } : profile.authType === 'agent' ? agentConfig(agent!) : { password: password ?? '' }),
           hostVerifier: (key: Buffer, callback: (trusted: boolean) => void) => {
             events.phase('verifying')
             this.verifyHost(session, profile.host, profile.port, key).then(callback, () => callback(false))
@@ -308,6 +347,7 @@ export class SshService {
     const { profile } = request
     if (profile.tmuxSession !== undefined && !/^[a-zA-Z0-9_-]{1,64}$/.test(profile.tmuxSession)) throw new Error('Use a tmux session name of 1–64 letters, numbers, underscores, or hyphens.')
     let privateKey: Buffer | undefined
+    const agent = profile.authType === 'agent' ? this.agentPath() : undefined
     const preparing = { ownerId, canceled: false }
     this.preparing.set(request.sessionId, preparing)
     try {
@@ -380,7 +420,7 @@ export class SshService {
       const config: ConnectConfig = {
         host: profile.host, port: profile.port, username: profile.username,
         readyTimeout: 150_000, keepaliveInterval: 15_000, keepaliveCountMax: 3,
-        ...(profile.authType === 'privateKey' ? { privateKey, passphrase: request.passphrase } : { password: request.password ?? '' }),
+        ...(profile.authType === 'privateKey' ? { privateKey, passphrase: request.passphrase } : profile.authType === 'agent' ? agentConfig(agent!) : { password: request.password ?? '' }),
         hostVerifier: (key: Buffer, callback: (trusted: boolean) => void) => {
           this.verifyHost(session, profile.host, profile.port, key).then(callback, () => callback(false))
         }
@@ -426,23 +466,29 @@ export class SshService {
     session.shell?.write(data)
   }
 
-  async runTerminalScript(ownerId: number, sessionId: unknown, value: unknown): Promise<void> {
+  async runTerminalScript(ownerId: number, sessionId: unknown, value: unknown, details?: { scriptId?: string; name?: string }): Promise<ScriptRun> {
     const session = this.getSession(ownerId, sessionId)
     const shell = session.shell
     if (!session.connected || !shell || shell.destroyed || shell.writableEnded) throw new Error('Connect this SSH terminal before running a script.')
+    if (session.activeScript) throw new Error('A script is already running in this terminal. Wait for its result or disconnect before starting another.')
     if (typeof value !== 'string' || !value.trim() || value.length > 32768) throw new Error('Enter a script of at most 32768 characters.')
     const command = value.replace(/\r\n/g, '\n')
     if (/[\x00-\x08\x0b-\x1f\x7f]/.test(command)) throw new Error('Scripts can contain text, tabs, and line breaks only. Terminal control characters are not allowed.')
     const utf8 = Buffer.from(command, 'utf8')
     if (utf8.toString('utf8') !== command) throw new Error('The script contains invalid Unicode text.')
-    // Readline can interpret literal TAB/LF even inside a quoted pasted
-    // argument. Transmit printable ASCII only, decode within the child sh,
-    // and retain trailing newlines with a non-newline sentinel. No eval or
-    // sourcing is involved; the script keeps this terminal as its stdin.
-    const octal = Array.from(utf8, (byte) => `\\${byte.toString(8).padStart(3, '0')}`).join('')
-    const invocation = `s=$(printf '${octal}'; printf .); exec sh -c "\${s%.}"`
-    const payload = `sh -c '${invocation.replace(/'/g, "'\\''")}'\r`
-    await new Promise<void>((resolve, reject) => {
+    const meta = details === undefined ? {} : record(details, 'script details')
+    const scriptId = meta.scriptId === undefined ? undefined : identifier(meta.scriptId, 'script identifier')
+    if (meta.name !== undefined && (typeof meta.name !== 'string' || meta.name.length > 100 || /[\x00-\x1f\x7f]/.test(meta.name))) throw new Error('Use a script name of up to 100 printable characters.')
+    const run: ScriptRun = { id: randomUUID(), sessionId: session.id, ...(scriptId ? { scriptId } : {}), name: typeof meta.name === 'string' && meta.name.trim() ? meta.name.trim() : 'Terminal script', status: 'running', startedAt: Date.now() }
+    const { payload, parser } = terminalScript(command)
+    session.scriptParser = parser; session.activeScript = run.id
+    this.scriptRuns.set(run.id, { ownerId, run })
+    if (this.scriptRuns.size > 200) for (const [id, item] of this.scriptRuns) {
+      if (item.run.status !== 'running') this.scriptRuns.delete(id)
+      if (this.scriptRuns.size <= 200) break
+    }
+    this.events.scriptRun?.(ownerId, { ...run })
+    try { await new Promise<void>((resolve, reject) => {
       let settled = false
       const finish = (error?: Error | null) => {
         if (settled) return
@@ -454,12 +500,22 @@ export class SshService {
       }
       const failed = (error: Error) => finish(error)
       const closed = () => finish(new Error('The terminal disconnected while submitting the script.'))
-      const timer = setTimeout(() => finish(new Error('Script submission could not be confirmed. It may already have been sent; check this terminal before retrying.')), 30_000)
+      const timer = setTimeout(() => finish(this.scriptRuns.get(run.id)?.run.status !== 'running' ? undefined : new Error('Script submission could not be confirmed. It may already have been sent; check this terminal before retrying.')), 30_000)
       shell.once('error', failed)
       shell.once('close', closed)
       try { session.beforeInput?.(); shell.write(payload, (error?: Error | null) => finish(error)) }
       catch (error) { finish(error instanceof Error ? error : new Error('The script could not be sent to this terminal.')) }
-    })
+    }) } catch (error) {
+      // A write callback failure is not proof that the server did not execute
+      // bytes. Keep the run active until its actual result or disconnect.
+      const item = this.scriptRuns.get(run.id)
+      if (item?.run.status === 'running') {
+        item.run = { ...item.run, message: 'Submission could not be confirmed. Follow the terminal before retrying.' }
+        this.events.scriptRun?.(ownerId, { ...item.run })
+      }
+      throw error
+    }
+    return this.getScriptRun(ownerId, run.id)
   }
 
   private terminalOutput(session: Session): (data: Buffer) => void {
@@ -489,7 +545,9 @@ export class SshService {
     session.beforeInput = session.flushOutput
     return (data) => {
       if (session.closed || !data.byteLength) return
-      const owned = new Uint8Array(data)
+      const parsed = session.scriptParser?.consume(data)
+      const owned = new Uint8Array(parsed?.data ?? data)
+      if (owned.byteLength) {
       if (!tick) {
         // Deliver the first chunk immediately: a keystroke's server echo
         // never waits for a batch timer. Merge only additional packets from
@@ -500,6 +558,11 @@ export class SshService {
       } else {
         chunks.push(owned); bytes += owned.byteLength
         if (bytes >= 64 * 1024) flush()
+      }
+      }
+      if (parsed?.exitCode !== undefined) {
+        session.flushOutput?.()
+        this.finishScript(session, parsed.exitCode === 0 ? 'completed' : 'failed', parsed.exitCode)
       }
     }
   }
@@ -543,6 +606,8 @@ export class SshService {
     session.flushOutput?.()
     session.flushOutput = undefined
     session.beforeInput = undefined
+    session.scriptParser = undefined
+    this.finishScript(session, 'disconnected', undefined, 'The SSH terminal disconnected before a script result was received.')
     this.sessions.delete(session.id)
     for (const challenge of this.challenges.values()) if (challenge.sessionId === session.id) challenge.respond(false)
     session.rejectConnect?.(new Error('Connection closed before the terminal was ready.'))
@@ -592,6 +657,44 @@ export class SshService {
       })
     })
     return { path: directory, entries }
+  }
+
+  async getRemoteProperties(ownerId: number, sessionId: unknown, value: unknown): Promise<RemoteProperties> {
+    const session = this.getSession(ownerId, sessionId), filename = remotePath(value)
+    const sftp = await this.getSftp(ownerId, session.id)
+    const attrs = await new Promise<Stats>((resolve, reject) => sftp.lstat(filename, (error, result) => error ? reject(error) : resolve(result)))
+    if (this.getSession(ownerId, session.id) !== session) throw new Error('The SSH session changed while reading file properties.')
+    return properties(filename, attrs)
+  }
+
+  async chmodRemote(ownerId: number, sessionId: unknown, value: unknown, modeValue: unknown, expectedVersion?: unknown): Promise<RemoteProperties> {
+    const session = this.getSession(ownerId, sessionId), filename = remotePath(value)
+    const mode = integer(modeValue, 'file permissions', 0, 0o777)
+    if (expectedVersion !== undefined && (typeof expectedVersion !== 'string' || !/^[a-f0-9]{64}$/.test(expectedVersion))) throw new Error('Reload file properties before changing permissions.')
+    const sftp = await this.getSftp(ownerId, session.id)
+    const assertLive = () => { if (this.getSession(ownerId, session.id) !== session) throw new Error('The SSH session changed while editing permissions.') }
+    const read = () => new Promise<Stats>((resolve, reject) => sftp.lstat(filename, (error, result) => error ? reject(error) : resolve(result)))
+    const before = properties(filename, await read())
+    if (before.type !== 'file' && before.type !== 'directory') throw new Error('Permission changes support regular files and directories only. Symbolic links are not followed.')
+    if (before.mode & 0o7000) throw new Error('Use the terminal to change permissions on files with setuid, setgid, or sticky bits.')
+    if (expectedVersion !== undefined && before.version !== expectedVersion) throw new Error('The remote file changed. Reload its properties before changing permissions.')
+    assertLive()
+    let handle: Buffer | undefined
+    try {
+      // A handle-bound FSETSTAT cannot follow a last-moment replacement link.
+      // Refuse servers without this capability instead of falling back to a
+      // path-based chmod that could silently follow symbolic links.
+      handle = await new Promise<Buffer>((resolve, reject) => sftp.open(filename, 'r', (error, result) => error ? reject(new Error('The server could not open this item for a safe permission change. Use the terminal or check access permissions.')) : resolve(result)))
+      const opened = await new Promise<Stats>((resolve, reject) => sftp.fstat(handle!, (error, result) => error ? reject(error) : resolve(result)))
+      if (properties(filename, opened).version !== before.version || properties(filename, await read()).version !== before.version) throw new Error('The remote file changed while opening it. Reload its properties before changing permissions.')
+      assertLive()
+      await new Promise<void>((resolve, reject) => sftp.fchmod(handle!, mode, (error) => error ? reject(error) : resolve()))
+      const after = properties(filename, await new Promise<Stats>((resolve, reject) => sftp.fstat(handle!, (error, result) => error ? reject(error) : resolve(result))))
+      const named = properties(filename, await read())
+      assertLive()
+      if (after.version !== named.version || (after.mode & 0o777) !== mode) throw new Error('The remote path changed during the permission update. Reload its properties and check the result.')
+      return named
+    } finally { if (handle) await new Promise<void>((resolve) => sftp.close(handle!, () => resolve())) }
   }
 
   async mkdir(ownerId: number, sessionId: unknown, value: unknown): Promise<void> {

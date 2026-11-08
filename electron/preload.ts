@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { GroupCommandEvent, HostKeyChallenge, SessionStatus, SshHeavenApi, TerminalData, TransferJob, WindowState, TunnelInfo, UpdateState, McpState, WallpaperState, VaultState } from '../shared/types'
+import type { GroupCommandEvent, HostKeyChallenge, SessionStatus, SshHeavenApi, TerminalData, TransferJob, WindowState, TunnelInfo, UpdateState, McpState, WallpaperState, VaultState, ScriptRun } from '../shared/types'
 import { channels } from './channels'
 
 function subscribe<T>(channel: string, callback: (payload: T) => void): () => void {
@@ -10,6 +10,17 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 
 // Only expose named, narrowly scoped operations. Renderer code never receives raw IPC or Node APIs.
 const api: SshHeavenApi = {
+  getRemoteProperties: (id, path) => ipcRenderer.invoke(channels.getRemoteProperties, id, path),
+  chmodRemote: (id, path, mode, version) => ipcRenderer.invoke(channels.chmodRemote, id, path, mode, version),
+  listScriptRuns: () => ipcRenderer.invoke(channels.listScriptRuns),
+  onScriptRun: (callback) => subscribe<ScriptRun>(channels.scriptRun, callback),
+  notifyScriptRun: (id) => ipcRenderer.invoke(channels.notifyScriptRun, id),
+  exportTerminalLog: (text) => ipcRenderer.invoke(channels.exportTerminalLog, text),
+  pauseTransfer: (id) => ipcRenderer.invoke(channels.pauseTransfer, id),
+  resumeTransfer: (id) => ipcRenderer.invoke(channels.resumeTransfer, id),
+  moveTransfer: (id, direction) => ipcRenderer.invoke(channels.moveTransfer, id, direction),
+  getTransferBandwidthLimit: () => ipcRenderer.invoke(channels.getTransferBandwidthLimit),
+  setTransferBandwidthLimit: (limit) => ipcRenderer.invoke(channels.setTransferBandwidthLimit, limit),
   listProfiles: () => ipcRenderer.invoke(channels.listProfiles),
   listRecentHosts: () => ipcRenderer.invoke(channels.listRecentHosts),
   clearRecentHosts: () => ipcRenderer.invoke(channels.clearRecentHosts),
@@ -52,7 +63,7 @@ const api: SshHeavenApi = {
   connect: (request) => ipcRenderer.invoke(channels.connect, request),
   disconnect: (sessionId) => ipcRenderer.invoke(channels.disconnect, sessionId),
   write: (sessionId, data) => ipcRenderer.send(channels.write, sessionId, data),
-  runTerminalScript: (sessionId, command) => ipcRenderer.invoke(channels.runTerminalScript, sessionId, command),
+  runTerminalScript: (sessionId, command, details) => ipcRenderer.invoke(channels.runTerminalScript, sessionId, command, details),
   resize: (sessionId, cols, rows) => ipcRenderer.send(channels.resize, sessionId, cols, rows),
   readClipboard: () => ipcRenderer.invoke(channels.readClipboard),
   writeClipboard: (text) => ipcRenderer.invoke(channels.writeClipboard, text),

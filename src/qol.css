@@ -1,0 +1,24 @@
+.connection-appearance { margin: 15px 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; }
+.connection-appearance summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+.connection-appearance[open] summary { margin-bottom: 15px; }
+.connection-appearance select, .connection-appearance textarea { width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--input); color: var(--text); font: inherit; }
+.connection-appearance textarea { resize: vertical; min-height: 75px; }
+.agent-auth-note { padding: 13px; border: 1px solid var(--accent-border); background: var(--accent-soft); border-radius: 9px; line-height: 1.7; }
+.host-notes-preview { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 9px 0; }
+.recent-host-card { border-top-width: 2px; }
+.host-avatar svg { flex-shrink: 0; }
+.session-tab.is-pinned { background: var(--surface); }
+.ssh-session-strip .tab-actions { flex-shrink: 0; width: 20px; height: 24px; padding: 0; border-radius: 5px; display: grid; place-items: center; opacity: 0; background: transparent; color: var(--text-muted); }
+.session-tab:hover .tab-actions, .session-tab:focus-within .tab-actions { opacity: 1; }
+.ssh-session-strip .tab-actions:hover { background: var(--surface-hover); color: var(--text); }
+.session-action-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+.session-action-list .button { justify-content: flex-start; }
+.session-host-notes { padding: 12px; font-size: 12px; color: var(--text-secondary); background: var(--input); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
+.stream-rules-modal { width: 660px; }
+.retained-editor-trigger { position: relative; }
+.retained-editor-trigger small { position: absolute; right: -2px; top: -3px; min-width: 13px; border-radius: 5px; padding: 1px 3px; background: var(--accent); color: var(--bg); font-size: 8px; font-variant-numeric: tabular-nums; }
+.stream-rules-list { max-height: 45vh; overflow: auto; margin-bottom: 12px; }
+.stream-rule { display: flex; gap: 10px; align-items: center; margin-bottom: 9px; }
+.stream-rule > input { min-width: 0; flex: 1; padding: 10px; border: 1px solid var(--border); background: var(--input); border-radius: 8px; color: var(--text); }
+.stream-rule .checkbox-label { margin: 0; white-space: nowrap; font-size: 11px; }
+@media(max-width: 850px) { .auth-heading { flex-wrap: wrap; gap: 7px; } .session-action-list { grid-template-columns: 1fr; } }

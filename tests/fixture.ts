@@ -63,10 +63,14 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
   }
   const clients = new Set<Connection>()
   const fileDescriptors = new Set<number>()
+  const scriptChildren = new Set<ChildProcessWithoutNullStreams>()
+  // Windows chmod has no POSIX rwx matrix. Retain the requested wire mode in
+  // this fixture while real POSIX platforms also apply it to their open fd.
+  const permissionModes = new Map<string, number>()
 
   // Reject drive names, alternate separators, NUL, traversal above /, and all
   // symlinks. Checking every component also protects creation/rename targets.
-  function resolveRemote(remotePath: string): string {
+  function resolveRemote(remotePath: string, allowFinalSymlink = false): string {
     if (remotePath.includes('\0') || remotePath.includes('\\') || remotePath.includes(':')) {
       throw fixtureError('Invalid fixture path', 'EACCES')
     }
@@ -91,10 +95,10 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
       throw fixtureError('Path escapes fixture root', 'EACCES')
     }
     let ancestor = root
-    for (const segment of segments) {
+    for (const [index, segment] of segments.entries()) {
       ancestor = path.join(ancestor, segment)
       try {
-        if (fs.lstatSync(ancestor).isSymbolicLink()) throw fixtureError('Symlinks are disabled in the fixture', 'EACCES')
+        if (fs.lstatSync(ancestor).isSymbolicLink() && !(allowFinalSymlink && index === segments.length - 1)) throw fixtureError('Symlinks are disabled in the fixture', 'EACCES')
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
@@ -108,7 +112,7 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
 
   function attributes(stats: fs.Stats) {
     return {
-      mode: stats.mode,
+      mode: permissionModes.get(`${stats.dev}:${stats.ino}`) ?? stats.mode,
       uid: stats.uid,
       gid: stats.gid,
       size: stats.size,
@@ -120,7 +124,7 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
   function openShell(stream: ServerChannel, columns: () => number) {
     let input = ''
     let child: ChildProcessWithoutNullStreams | undefined
-    stream.once('close', () => { child?.kill() })
+    stream.once('close', () => { child?.stdin.end(); child?.kill() })
     const prompt = () => stream.write(`\r\n${username}@ssh-heaven:/$ `)
     stream.write('SSH Heaven local test server\r\nType help for available commands.\r\n')
     prompt()
@@ -156,10 +160,11 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
             const executable = process.platform === 'win32' ? path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'bin', 'bash.exe') : '/bin/sh'
             const processHandle = spawn(executable, [...(process.platform === 'win32' ? ['--noprofile', '--norc'] : []), '-c', command], { cwd: root, windowsHide: true, stdio: 'pipe' })
             child = processHandle
+            scriptChildren.add(processHandle)
             processHandle.stdout.on('data', (chunk: Buffer) => { if (!stream.destroyed) stream.write(chunk) })
             processHandle.stderr.on('data', (chunk: Buffer) => { if (!stream.destroyed) stream.write(chunk) })
             processHandle.once('error', () => { if (!stream.destroyed) stream.write('Fixture script interpreter could not start.\r\n') })
-            processHandle.once('close', () => { if (child === processHandle) child = undefined; if (!stream.destroyed) prompt() })
+            processHandle.once('close', () => { scriptChildren.delete(processHandle); if (child === processHandle) child = undefined; if (!stream.destroyed) prompt() })
           }
           else if (command) stream.write(`Fixture command not found: ${command}\r\n`)
           if (!child) prompt()
@@ -240,7 +245,7 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
           sftp.attrs(requestId, attributes(fs.statSync(resolveRemote(remotePath))))
         })
         sftp.on('STAT', stat)
-        sftp.on('LSTAT', stat)
+        sftp.on('LSTAT', (requestId, remotePath) => respond(requestId, () => sftp.attrs(requestId, attributes(fs.lstatSync(resolveRemote(remotePath, true))))))
         sftp.on('FSTAT', (requestId, handle) => respond(requestId, () => {
           const value = getHandle(handle)
           sftp.attrs(requestId, attributes(value.kind === 'file' ? fs.fstatSync(value.fd) : fs.statSync(value.localPath)))
@@ -256,13 +261,18 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
           if (value.consumed) { sftp.status(requestId, STATUS_CODE.EOF); return }
           value.consumed = true
           const names = fs.readdirSync(value.localPath).map((name) => {
-            const localPath = resolveRemote(`${remoteName(value.localPath)}/${name}`)
-            return { filename: name, longname: name, attrs: attributes(fs.statSync(localPath)) }
+            const localPath = resolveRemote(`${remoteName(value.localPath)}/${name}`, true)
+            return { filename: name, longname: name, attrs: attributes(fs.lstatSync(localPath)) }
           })
           if (names.length) sftp.name(requestId, names)
           else sftp.status(requestId, STATUS_CODE.EOF)
         }))
         sftp.on('OPEN', (requestId, remotePath, flags, attrs) => respond(requestId, () => {
+          const localPath = resolveRemote(remotePath)
+          if (!(flags & (OPEN_MODE.WRITE | OPEN_MODE.CREAT | OPEN_MODE.TRUNC)) && fs.existsSync(localPath) && fs.statSync(localPath).isDirectory()) {
+            sftp.handle(requestId, makeHandle({ kind: 'directory', localPath, consumed: false }))
+            return
+          }
           let nativeFlags = flags & OPEN_MODE.WRITE ? flags & OPEN_MODE.READ ? fs.constants.O_RDWR : fs.constants.O_WRONLY : fs.constants.O_RDONLY
           if (flags & OPEN_MODE.CREAT) nativeFlags |= fs.constants.O_CREAT
           if (flags & OPEN_MODE.TRUNC) nativeFlags |= fs.constants.O_TRUNC
@@ -271,6 +281,17 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
           const fd = fs.openSync(resolveRemote(remotePath), nativeFlags, attrs.mode ?? 0o644)
           fileDescriptors.add(fd)
           sftp.handle(requestId, makeHandle({ kind: 'file', fd }))
+        }))
+        sftp.on('FSETSTAT', (requestId, handle, attrs) => respond(requestId, () => {
+          const value = getHandle(handle)
+          if (typeof attrs.mode !== 'number' || !Number.isInteger(attrs.mode) || attrs.mode < 0 || attrs.mode > 0o777 || attrs.size !== undefined || attrs.uid !== undefined || attrs.gid !== undefined) throw fixtureError('Only basic permission changes are supported in this fixture', 'EACCES')
+          const metadata = value.kind === 'file' ? fs.fstatSync(value.fd) : fs.statSync(resolveRemote(remoteName(value.localPath)))
+          if (process.platform !== 'win32') {
+            if (value.kind === 'file') fs.fchmodSync(value.fd, attrs.mode)
+            else fs.chmodSync(value.localPath, attrs.mode)
+          }
+          permissionModes.set(`${metadata.dev}:${metadata.ino}`, (metadata.mode & ~0o777) | attrs.mode)
+          sftp.status(requestId, STATUS_CODE.OK)
         }))
         const respondIo = (requestId: number, operation: () => void) => {
           if (options.ioDelayMs) setTimeout(() => { if (!sftpClosed) respond(requestId, operation) }, options.ioDelayMs)
@@ -341,10 +362,16 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
       closed = true
       for (const client of clients) client.end()
       await new Promise<void>((resolve) => server.close(() => resolve()))
+      await Promise.all([...scriptChildren].map((processHandle) => new Promise<void>((resolve) => {
+        if (processHandle.exitCode !== null || processHandle.signalCode !== null) { resolve(); return }
+        const timer = setTimeout(resolve, 2000)
+        processHandle.once('close', () => { clearTimeout(timer); resolve() })
+        processHandle.stdin.end(); processHandle.kill()
+      })))
       for (const fd of fileDescriptors) fs.closeSync(fd)
       fileDescriptors.clear()
       // root was created by mkdtemp above and is never derived from remote input.
-      fs.rmSync(root, { recursive: true, force: true })
+      await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
       if (identityDirectory) fs.rmSync(identityDirectory, { recursive: true, force: true })
     },
   }

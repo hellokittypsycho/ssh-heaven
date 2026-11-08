@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
-import { ArrowDown, ArrowDownToLine, ArrowUp, Eraser, Minus, Plus, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowDownToLine, ArrowUp, Download, Eraser, Minus, Plus, Search, X } from 'lucide-react'
 import { useTheme } from '../theme'
 import { useWallpaper } from '../wallpaper'
 import { isStreamModeEnabled, useStreamMode } from '../stream-mode'
-import { redactIPs } from '../../shared/ip-redaction'
+import { redactSensitiveText as redactIPs } from '../stream-rules'
 import { TerminalPrivacyRenderer } from '../terminal-privacy'
 import '@xterm/xterm/css/xterm.css'
 import './terminal.css'
@@ -297,7 +297,7 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
     }
   }, [sessionId, transport, runSearch])
 
-  useEffect(() => { switchPrivacyRef.current?.(streamMode.enabled) }, [streamMode.enabled])
+  useLayoutEffect(() => { switchPrivacyRef.current?.(streamMode.enabled); privacyRendererRef.current?.refreshRules() }, [streamMode.enabled, streamMode.rules])
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.theme = wallpaperActive ? { ...preset.terminal, background: '#00000000' } : preset.terminal
@@ -376,11 +376,30 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
   const resultText = !query ? 'Type to search' : results.resultCount === 0 ? 'No matches'
     : results.resultIndex < 0 ? `${results.resultCount}+ matches` : `${results.resultIndex + 1} of ${results.resultCount}`
 
+  async function exportLog() {
+    const terminal = rawTerminalRef.current
+    if (!terminal) return
+    let text = terminal.getSelection()
+    // The visible privacy terminal owns selection when Stream mode is on.
+    text = terminalRef.current?.getSelection() || text
+    if (!text) {
+      const buffer = terminal.buffer.active
+      for (let index = 0; index < buffer.length; index++) {
+        const line = buffer.getLine(index)
+        if (index && !line?.isWrapped) text += '\n'
+        text += line?.translateToString(true) || ''
+      }
+      text = text.trimEnd() + '\n'
+    }
+    await window.sshHeaven.exportTerminalLog(isStreamModeEnabled() ? redactIPs(text) : text)
+  }
+
   return <div ref={wrapper} className="ssh-terminal">
     <div className="ssh-terminal-toolbar" role="toolbar" aria-label="Terminal tools">
       <div className="ssh-terminal-tool-group">
         <button type="button" className="ssh-terminal-button" title="Search terminal (Ctrl+Shift+F)" aria-label="Search terminal" aria-expanded={searchOpen} aria-controls={`terminal-search-${sessionId}`} onClick={() => setSearchOpen((open) => !open)}><Search size={13} /><span>Search</span></button>
         <button type="button" className="ssh-terminal-button" title="Clear terminal scrollback and view" aria-label="Clear terminal view" onClick={clearView}><Eraser size={13} /><span>Clear</span></button>
+        <button type="button" className="ssh-terminal-button" title="Export selection or terminal output" aria-label="Export terminal log" onClick={() => void exportLog().catch(onError)}><Download size={13} /><span>Export</span></button>
       </div>
       <div className="ssh-terminal-font-tools" role="group" aria-label="Terminal font size controls">
         <span className="ssh-terminal-font-label">Font</span>

@@ -17,6 +17,39 @@
   padding: 18px 22px;
   border-bottom: 1px solid var(--border);
 }
+.remote-editor-workspace-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 18px; flex-shrink:0; border-bottom:1px solid var(--border); }
+.remote-editor-workspace-toolbar > span { display:flex; align-items:center; gap:7px; color:var(--text-muted); font-size:11px; }
+.remote-editor-workspace-toolbar > div { display:flex; align-items:center; gap:7px; }
+.remote-editor-workspace-toolbar .button { font-size:11px; min-height:29px; padding:6px 9px; }
+.remote-editor-tabs { display:flex; flex-shrink:0; gap:4px; padding:7px 10px 0; overflow:auto; border-bottom:1px solid var(--border); background:var(--bg); scrollbar-width:thin; }
+.remote-editor-tab { display:flex; align-items:center; flex:0 0 190px; min-width:150px; max-width:220px; border:1px solid transparent; border-bottom:0; border-radius:9px 9px 0 0; background:transparent; }
+.remote-editor-tab.active { border-color:var(--border-strong); background:var(--surface); }
+.remote-editor-tab > button[role="tab"] { display:flex; align-items:center; gap:8px; flex:1; min-width:0; padding:9px 5px 10px 11px; background:transparent; text-align:left; color:var(--text-secondary); font-size:12px; }
+.remote-editor-tab.active > button[role="tab"] { color:var(--text); }
+.remote-editor-tab > button[role="tab"] > svg { flex-shrink:0; color:var(--accent); }
+.remote-editor-tab > button[role="tab"] > span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.remote-editor-tab small { display:block; overflow:hidden; margin-top:4px; white-space:nowrap; text-overflow:ellipsis; color:var(--text-muted); font-size:9px; }
+.remote-editor-tab > .icon-button { width:25px; height:25px; flex-shrink:0; margin-right:4px; }
+.remote-editor-tab button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.remote-editor-document { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
+.remote-editor-document[hidden] { display:none; }
+.modal.remote-editor-review-modal { display:flex; flex-direction:column; width:min(980px,95vw); max-height:88vh; }
+.remote-editor-review-heading { display:flex; align-items:center; gap:10px; margin-bottom:13px; }
+.remote-editor-review-heading p { flex:1; min-width:0; overflow-wrap:anywhere; color:var(--text-secondary); font:12px/1.7 "Cascadia Code",Consolas,monospace; }
+.remote-editor-review-heading > span { flex-shrink:0; font-size:12px; }
+.remote-editor-review-heading > .diff-added { color:var(--success); }
+.remote-editor-review-heading > .diff-removed { color:var(--danger); }
+.remote-editor-diff { max-height:min(420px,46vh); min-height:90px; overflow:auto; border:1px solid var(--border); border-radius:10px; background:var(--input); padding:5px 0; font:11px/1.8 "Cascadia Code",Consolas,monospace; }
+.diff-line { display:grid; grid-template-columns:43px 43px 19px minmax(0,1fr); min-width:max-content; padding:1px 10px 1px 0; color:var(--text-secondary); }
+.diff-line > span { padding-right:9px; color:var(--text-muted); font-size:10px; user-select:none; text-align:right; }
+.diff-line > b { font-weight:500; user-select:none; }
+.diff-line > code { font:inherit; white-space:pre; }
+.diff-line.diff-added { color:var(--text); background:var(--success-soft); }
+.diff-line.diff-added > b { color:var(--success); }
+.diff-line.diff-removed { color:var(--text-secondary); background:var(--danger-soft); }
+.diff-line.diff-removed > b { color:var(--danger); }
+.diff-omitted { padding:7px 15px; font-size:10px; color:var(--text-muted); background:var(--surface); }
+.remote-editor-review-limit { margin-top:12px; color:var(--text-muted); font-size:11px; line-height:1.7; }
 
 .remote-editor-file-heading {
   display: flex;

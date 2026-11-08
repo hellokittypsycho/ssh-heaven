@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
-import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowUp, ArrowUpFromLine, CheckCheck, ChevronRight, Copy, Eye, EyeOff, File, FilePenLine, Folder, FolderPlus, Home, Link, LoaderCircle, Pencil, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowUp, ArrowUpFromLine, Bookmark, BookmarkPlus, CheckCheck, ChevronRight, Copy, Eye, EyeOff, File, FilePenLine, Folder, FolderPlus, Home, Info, Link, LoaderCircle, Pencil, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import type { RemoteEntry, SshHeavenApi } from '../../shared/types'
 import { useTransfers } from '../transfer-store'
+import { getRemoteFolders, saveRemoteFolders, type RemoteFolders } from '../remote-folders'
 import { Modal, errorMessage } from './Modal'
 import { formatBytes, TransferPanel } from './TransferPanel'
+import { FileProperties } from './FileProperties'
 import './file-browser.css'
 
 const join = (directory: string, name: string) => `${directory === '/' ? '' : directory.replace(/\/$/, '')}/${name}`
@@ -13,7 +15,7 @@ function initialWidth() {
   try { return Math.min(740, Math.max(320, Number(localStorage.getItem('ssh-heaven-files-width')) || 440)) } catch { return 440 }
 }
 
-export function FileBrowser({ sessionId, connected, api, onClose, onEdit, refreshToken }: { sessionId: string; connected: boolean; api: SshHeavenApi; onClose: () => void; onEdit?: (path: string) => void; refreshToken?: number }) {
+export function FileBrowser({ sessionId, profileId, connected, api, onClose, onEdit, refreshToken }: { sessionId: string; profileId?: string; connected: boolean; api: SshHeavenApi; onClose: () => void; onEdit?: (path: string) => void; refreshToken?: number }) {
   const [path, setPath] = useState('.')
   const [pathInput, setPathInput] = useState('.')
   const [entries, setEntries] = useState<RemoteEntry[]>([])
@@ -22,6 +24,11 @@ export function FileBrowser({ sessionId, connected, api, onClose, onEdit, refres
   const [operation, setOperation] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [folders, setFolders] = useState(() => getRemoteFolders(profileId))
+  const [bookmarksOpen, setBookmarksOpen] = useState(false)
+  const [bookmarkName, setBookmarkName] = useState('')
+  const [bookmarkError, setBookmarkError] = useState('')
+  const [propertiesPath, setPropertiesPath] = useState<string | null>(null)
   const [dropping, setDropping] = useState(false)
   const [action, setAction] = useState<'mkdir' | 'rename' | 'remove' | null>(null)
   const [name, setName] = useState('')
@@ -32,6 +39,7 @@ export function FileBrowser({ sessionId, connected, api, onClose, onEdit, refres
   const [navigation, setNavigation] = useState<{ paths: string[]; index: number }>({ paths: [], index: -1 })
   const currentPath = useRef('.')
   const request = useRef(0)
+  const observedRefresh = useRef(refreshToken)
   const mounted = useRef(true)
   const resize = useRef<{ x: number; width: number } | null>(null)
   const jobs = useTransfers(sessionId)
@@ -56,20 +64,39 @@ export function FileBrowser({ sessionId, connected, api, onClose, onEdit, refres
       const changed = currentPath.current !== result.path
       currentPath.current = result.path
       setPath(result.path); setPathInput(result.path); setEntries(result.entries)
+      if (profileId) setFolders(saveRemoteFolders(profileId, { ...getRemoteFolders(profileId), lastFolder: result.path }))
       setSelected((current) => changed ? new Set() : new Set([...current].filter((item) => result.entries.some((entry) => entry.path === item))))
       if (changed) setFilter('')
       if (navigate) setNavigation((current) => current.paths[current.index] === result.path ? current : { paths: [...current.paths.slice(0, current.index + 1), result.path], index: current.index + 1 })
       return true
-    } catch (cause) { if (mounted.current && id === request.current) setError(errorMessage(cause)); return false }
+    } catch (cause) { if (mounted.current && id === request.current) { setError(errorMessage(cause)); return false } }
     finally { if (mounted.current && id === request.current) setLoading(false) }
-  }, [api, sessionId])
+  }, [api, sessionId, profileId])
   useEffect(() => {
     mounted.current = true
-    if (connected) void load('.')
+    if (connected) {
+      const last = getRemoteFolders(profileId).lastFolder
+      void load(last || '.').then(async (success) => {
+        if (success === false && last && mounted.current && await load('.')) setNotice('The remembered folder is unavailable. Opened your remote home folder.')
+      })
+    }
     return () => { mounted.current = false; request.current++ }
-  }, [connected, load])
+  }, [connected, load, profileId])
+  useEffect(() => {
+    const refresh = () => setFolders(getRemoteFolders(profileId))
+    refresh()
+    window.addEventListener('ssh-heaven:remote-folders-change', refresh)
+    window.addEventListener('storage', refresh)
+    return () => { window.removeEventListener('ssh-heaven:remote-folders-change', refresh); window.removeEventListener('storage', refresh) }
+  }, [profileId])
   useEffect(() => { try { localStorage.setItem('ssh-heaven-files-width', String(width)) } catch { /* UI preferences are optional. */ } }, [width])
-  useEffect(() => { if (connected && refreshToken) void load(currentPath.current, false) }, [refreshToken, connected, load])
+  useEffect(() => {
+    const changed = observedRefresh.current !== refreshToken
+    observedRefresh.current = refreshToken
+    // A newly connected browser already restores its remembered folder. A
+    // pre-existing global editor refresh token must not race it with home.
+    if (connected && refreshToken && changed) void load(currentPath.current, false)
+  }, [refreshToken, connected, load])
   function toggle(entry: RemoteEntry) {
     setSelected((current) => { const next = new Set(current); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next })
   }
@@ -114,6 +141,18 @@ export function FileBrowser({ sessionId, connected, api, onClose, onEdit, refres
     finally { setOperation('') }
   }
   const closeAction = useCallback(() => { if (!operation) setAction(null) }, [operation])
+  const closeBookmarks = useCallback(() => setBookmarksOpen(false), [])
+  const closeProperties = useCallback(() => setPropertiesPath(null), [])
+  function updateFolders(change: (current: RemoteFolders) => RemoteFolders) { setFolders(saveRemoteFolders(profileId, change(getRemoteFolders(profileId)))) }
+  function openBookmarks() { setBookmarkName(folders.bookmarks.find((item) => item.path === path)?.name || path.split('/').filter(Boolean).at(-1) || 'Root folder'); setBookmarkError(''); setBookmarksOpen(true) }
+  function addBookmark(event: React.FormEvent) {
+    event.preventDefault()
+    if (!bookmarkName.trim()) { setBookmarkError('Give this folder a name.'); return }
+    const current = getRemoteFolders(profileId)
+    if (current.bookmarks.length >= 30 && !current.bookmarks.some((item) => item.path === path)) { setBookmarkError('This host has 30 bookmarks. Remove one before adding another.'); return }
+    updateFolders((value) => ({ ...value, bookmarks: [...value.bookmarks.filter((item) => item.path !== path), { name: bookmarkName.trim(), path }] }))
+    setBookmarksOpen(false); setNotice('Folder bookmark saved for this host.')
+  }
   const breadcrumbs = path === '.' ? [] : path.split('/').filter(Boolean)
   function resizeMove(event: PointerEvent<HTMLDivElement>) {
     if (resize.current) setWidth(Math.min(740, Math.max(320, resize.current.width + resize.current.x - event.clientX)))
@@ -134,6 +173,7 @@ export function FileBrowser({ sessionId, connected, api, onClose, onEdit, refres
       <form className="path-form" onSubmit={(event) => { event.preventDefault(); if (!busy && connected) void load(pathInput) }}><input aria-label="Remote path" value={pathInput} disabled={!connected} onChange={(event) => setPathInput(event.target.value)} spellCheck={false} /><button type="submit" className="icon-button" disabled={busy || !connected} aria-label="Go to remote path"><ChevronRight size={15} /></button></form>
       <button className="icon-button" disabled={busy || !connected} onClick={() => void load(path, false)} title="Refresh" aria-label="Refresh remote files"><RefreshCw size={16} className={loading ? 'spin' : ''} /></button>
     </div>
+    <div className="sftp-bookmark-bar"><Bookmark size={14} /><select aria-label="Saved remote folders" value={folders.bookmarks.some((item) => item.path === path) ? path : ''} disabled={!connected || busy || !folders.bookmarks.length} onChange={(event) => { if (event.target.value) void load(event.target.value) }}><option value="">{folders.bookmarks.length ? 'Saved folders' : 'Bookmark frequent folders'}</option>{folders.bookmarks.map((item) => <option key={item.path} value={item.path}>{item.name}</option>)}</select><button className="icon-button" aria-label="Manage folder bookmarks" title="Bookmark this folder and manage saved folders" disabled={!connected || busy || !profileId} onClick={openBookmarks}><BookmarkPlus size={16} /></button></div>
     <nav className="sftp-breadcrumbs" aria-label="Remote breadcrumbs"><button disabled={busy || !connected} onClick={() => void load('/')}>/</button>{breadcrumbs.map((part, index) => <span key={index}><ChevronRight size={11} /><button disabled={busy || !connected} title={`/${breadcrumbs.slice(0, index + 1).join('/')}`} onClick={() => void load(`/${breadcrumbs.slice(0, index + 1).join('/')}`)}>{part}</button></span>)}</nav>
     <div className="file-toolbar sftp-actions">
       <button className="sftp-action-button" disabled={!!operation || !connected} onClick={() => void transfer('upload')} title="Upload files" aria-label="Upload files"><ArrowUpFromLine size={15} /><span>Upload</span></button>
@@ -163,10 +203,12 @@ export function FileBrowser({ sessionId, connected, api, onClose, onEdit, refres
         {entry.type === 'directory' ? <Folder className="folder-icon" size={16} /> : entry.type === 'symlink' ? <Link size={15} /> : <File size={15} />}<span className="sftp-entry-name">{entry.name}</span><small>{entry.type === 'directory' ? '—' : formatBytes(entry.size)}</small><small className="sftp-modified">{entry.modified ? new Date(entry.modified * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—'}</small>
       </div>)}
     </div>
-    <div className="sftp-selection-bar"><span>{selection.length ? `${selection.length} selected · ${formatBytes(selection.reduce((sum, entry) => sum + (entry.type === 'file' ? entry.size : 0), 0))}` : `${visible.length} of ${entries.length} items`}</span><button className="icon-button" disabled={!connected} title={single ? 'Copy selected path' : 'Copy folder path'} aria-label="Copy remote path" onClick={() => void api.writeClipboard(single?.path ?? path).then(() => setNotice('Remote path copied.')).catch((cause) => setError(errorMessage(cause)))}><Copy size={13} /></button></div>
+    <div className="sftp-selection-bar"><span>{selection.length ? `${selection.length} selected · ${formatBytes(selection.reduce((sum, entry) => sum + (entry.type === 'file' ? entry.size : 0), 0))}` : `${visible.length} of ${entries.length} items`}</span><div className="sftp-selection-actions"><button className="icon-button" disabled={!connected || busy || selection.length > 1} title={single ? 'Selected item properties' : 'Current folder properties'} aria-label="File properties" onClick={() => setPropertiesPath(single?.path ?? path)}><Info size={14} /></button><button className="icon-button" disabled={!connected} title={single ? 'Copy selected path' : 'Copy folder path'} aria-label="Copy remote path" onClick={() => void api.writeClipboard(single?.path ?? path).then(() => setNotice('Remote path copied.')).catch((cause) => setError(errorMessage(cause)))}><Copy size={13} /></button></div></div>
     <TransferPanel sessionId={sessionId} jobs={jobs} api={api} onError={setError} onRetryComplete={() => { if (connected) void load(currentPath.current, false) }} />
     {dropping && <div className="sftp-drop-overlay"><ArrowUpFromLine size={30} /><strong>Drop files or folders to upload</strong><span>To {path}</span></div>}
     {operation && <div className="file-footer"><LoaderCircle size={12} className="spin" />{operation}</div>}
+    {propertiesPath && <FileProperties sessionId={sessionId} path={propertiesPath} api={api} onClose={closeProperties} onChanged={() => { if (connected) void load(currentPath.current, false) }} />}
+    {bookmarksOpen && <Modal title="Remote folder bookmarks" onClose={closeBookmarks} className="sftp-bookmarks-modal"><p className="modal-description">Saved folders belong to this host. Your last successfully opened folder is remembered automatically.</p><form onSubmit={addBookmark}><label className="field-label">Bookmark name<input value={bookmarkName} onChange={(event) => setBookmarkName(event.target.value)} maxLength={100} autoComplete="off" /></label><label className="field-label">Bookmark path<input value={path} readOnly /></label>{bookmarkError && <div className="form-error" role="alert">{bookmarkError}</div>}<div className="modal-actions"><button type="button" className="button secondary" onClick={closeBookmarks}>Cancel</button><button className="button primary" type="submit"><BookmarkPlus size={15} />Save folder bookmark</button></div></form><div className="sftp-bookmark-list" aria-label="Saved folder bookmarks">{folders.bookmarks.map((item) => <div key={item.path}><button onClick={() => { setBookmarksOpen(false); void load(item.path) }}><Bookmark size={15} /><span><strong>{item.name}</strong><small>{item.path}</small></span></button><button className="icon-button danger-hover" aria-label={`Remove bookmark ${item.name}`} onClick={() => updateFolders((value) => ({ ...value, bookmarks: value.bookmarks.filter((entry) => entry.path !== item.path) }))}><Trash2 size={14} /></button></div>)}{!folders.bookmarks.length && <p>No folders saved for this host yet.</p>}</div></Modal>}
     {action && <Modal title={action === 'mkdir' ? 'Create a folder' : action === 'rename' ? 'Rename item' : selection.length > 1 ? `Delete ${selection.length} items?` : 'Delete item?'} onClose={closeAction} className="small-modal"><form onSubmit={(event) => void performAction(event)}>
       {action === 'remove' ? <p className="modal-description">Delete <strong>{single?.name ?? `${selection.length} selected items`}</strong>? Files cannot be recovered. Only empty folders can be deleted.</p> : <label className="field-label">{action === 'mkdir' ? 'Folder name' : 'New name'}<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={255} autoFocus /></label>}
       {error && <div className="form-error" role="alert">{error}</div>}

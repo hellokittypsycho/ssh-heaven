@@ -7,7 +7,7 @@ import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { search as editorSearch } from '@codemirror/search'
 import { tags } from '@lezer/highlight'
 import { Check, FileCode2, LoaderCircle, Play, Plus, Save, Search, TerminalSquare, Trash2 } from 'lucide-react'
-import type { Runbook } from '../../shared/types'
+import type { Runbook, ScriptRun } from '../../shared/types'
 import { useTheme } from '../theme'
 import { useStreamMode } from '../stream-mode'
 import { streamPrivacyExtension } from '../privacy-editor'
@@ -25,18 +25,21 @@ export interface ScriptsTarget { sessionId: string; name: string; host: string; 
 interface Review { token: string; script: Runbook; target: ScriptsTarget; unsaved: boolean }
 const sameTarget = (a: ScriptsTarget | null, b: ScriptsTarget) => !!a && a.sessionId === b.sessionId && a.host === b.host && a.port === b.port && a.username === b.username
 
-export function ScriptsPanel({ scripts, target, targets, onTargetChange, onSave, onDelete, onRun, onDirtyChange }: {
+export function ScriptsPanel({ scripts, target, targets, onTargetChange, onSave, onDelete, onRun, onDirtyChange, runs = [], notifyOnCompletion = false, onNotifyChange }: {
   scripts: Runbook[]
   target: ScriptsTarget | null
   targets?: ScriptsTarget[]
   onTargetChange?: (sessionId: string) => void
   onSave: (script: Runbook) => Promise<void>
   onDelete: (id: string) => Promise<void>
-  onRun: (script: Runbook) => Promise<void>
+  onRun: (script: Runbook) => Promise<ScriptRun | void>
   onDirtyChange?: (dirty: boolean) => void
+  runs?: ScriptRun[]
+  notifyOnCompletion?: boolean
+  onNotifyChange?: (enabled: boolean) => void
 }) {
   const { preset } = useTheme()
-  const { enabled: streamMode } = useStreamMode()
+  const { enabled: streamMode, rules } = useStreamMode()
   const [draft, setDraft] = useState<Runbook>(blankScript)
   const [baseline, setBaseline] = useState(() => signature(draft))
   const [search, setSearch] = useState('')
@@ -56,6 +59,8 @@ export function ScriptsPanel({ scripts, target, targets, onTargetChange, onSave,
   const dirty = signature(draft) !== baseline
   const savedScript = scripts.find((script) => script.id === draft.id)
   const tooLarge = draft.command.length > MAX_SCRIPT
+  const targetRunning = !!target && runs.some((run) => run.sessionId === target.sessionId && run.status === 'running')
+  const recentRuns = [...runs].sort((a, b) => b.startedAt - a.startedAt).slice(0, 6)
   const filtered = [...scripts].sort((a, b) => a.name.localeCompare(b.name)).filter((script) => `${script.name} ${script.description || ''} ${script.group || ''}`.toLowerCase().includes(search.toLowerCase()))
   const groups = [...new Set(scripts.map((script) => script.group).filter((group): group is string => !!group))].sort((a, b) => a.localeCompare(b))
 
@@ -100,7 +105,7 @@ export function ScriptsPanel({ scripts, target, targets, onTargetChange, onSave,
   }
   saveRef.current = save
   function requestRun() {
-    if (busyRef.current || !target) return
+    if (busyRef.current || !target || targetRunning) return
     const script = snapshot(false)
     if (!script) return
     setError(''); setNotice('')
@@ -113,8 +118,8 @@ export function ScriptsPanel({ scripts, target, targets, onTargetChange, onSave,
     consumedReview.current = review.token
     busyRef.current = true; setBusy('run'); setError('')
     try {
-      await onRun({ ...review.script })
-      setNotice(`${review.script.name} sent once to ${review.target.name}.`)
+      const run = await onRun({ ...review.script })
+      setNotice(run ? `${review.script.name} started in ${review.target.name}. Its result will appear below.` : `${review.script.name} sent once to ${review.target.name}.`)
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setReview(null); busyRef.current = false; setBusy(null) }
   }
@@ -163,7 +168,7 @@ export function ScriptsPanel({ scripts, target, targets, onTargetChange, onSave,
     { key: 'Mod-s', run: () => { void saveRef.current(); return true } },
     { key: 'Mod-Enter', run: () => { reviewRef.current(); return true } },
   ])), [])
-  const privacy = useMemo(() => streamPrivacyExtension(streamMode), [streamMode])
+  const privacy = useMemo(() => streamPrivacyExtension(streamMode), [streamMode, rules])
   const extensions = useMemo(() => [EditorState.lineSeparator.of('\n'), EditorView.contentAttributes.of({ 'aria-label': 'Script contents', spellcheck: 'false' }), SHELL, SEARCH, editorTheme, highlighting, shortcuts, privacy], [editorTheme, highlighting, shortcuts, privacy])
 
   return <section className="scripts-panel" aria-label="Scripts workspace">
@@ -184,8 +189,9 @@ export function ScriptsPanel({ scripts, target, targets, onTargetChange, onSave,
           <div className="scripts-code"><CodeMirror height="100%" value={draft.command} theme="none" extensions={extensions} basicSetup={SETUP} readOnly={!!busy} onChange={changeCommand} onStatistics={statistics} placeholder="# Write your shell script here" /></div>
           <div className="scripts-editor-status"><span>Ln {position.line}, Col {position.column}</span><span>UTF-8 · LF</span></div>
           {draft.command.includes('{{') && <p className="scripts-literal-note">Runbook variables are sent literally here. Replace any {'{{variables}}'} in the script before running.</p>}
+          {recentRuns.length > 0 && <section className="scripts-run-history" aria-label="Script run history"><div className="scripts-run-history-heading"><h3>Recent runs</h3><span>Output stays in its terminal</span></div><ol>{recentRuns.map((run) => <li key={run.id} className={`script-run-result ${run.status}`} data-run-id={run.id} data-status={run.status}><div><strong>{run.name}</strong><span>{targets?.find((item) => item.sessionId === run.sessionId)?.name || 'Terminal session'}{run.message ? ` · ${run.message}` : ''}</span></div><span className="script-run-outcome">{run.status === 'running' ? <><LoaderCircle size={12} className="spin" />Running</> : run.status === 'completed' ? 'Completed' : run.status === 'failed' ? 'Failed' : 'Disconnected'}{run.exitCode !== undefined && <small>Exit {run.exitCode}</small>}{run.durationMs !== undefined && <small>{(run.durationMs / 1000).toFixed(1)}s</small>}</span></li>)}</ol></section>}
         </div>
-        <footer className="scripts-actions"><div className="scripts-target"><TerminalSquare size={16} /><div>{targets && onTargetChange ? <label>Target terminal<select aria-label="Script target terminal" disabled={!!busy || !targets.length} value={target?.sessionId || ''} onChange={(event) => onTargetChange(event.target.value)}>{!target && <option value="">Choose a connected terminal</option>}{targets.map((item) => <option key={item.sessionId} value={item.sessionId}>{item.name} · {item.username}@{item.host}:{item.port}</option>)}</select></label> : <><span>Target terminal</span><strong>{target?.name || 'No connected terminal'}</strong></>}<small>{target ? 'Runs once using sh. Start at an idle shell prompt.' : 'Connect a terminal to run this script.'}</small></div></div><div className="scripts-action-buttons"><button className="button secondary" aria-label="Save script" disabled={!!busy || !dirty || tooLarge} onClick={() => void save()}>{busy === 'save' ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}Save<kbd>Ctrl S</kbd></button><button className="button primary" aria-label="Review script run" disabled={!!busy || !target || !draft.command.trim() || tooLarge} onClick={requestRun}><Play size={15} />Run script</button></div></footer>
+        <footer className="scripts-actions"><div className="scripts-target"><TerminalSquare size={16} /><div>{targets && onTargetChange ? <label>Target terminal<select aria-label="Script target terminal" disabled={!!busy || !targets.length} value={target?.sessionId || ''} onChange={(event) => onTargetChange(event.target.value)}>{!target && <option value="">Choose a connected terminal</option>}{targets.map((item) => <option key={item.sessionId} value={item.sessionId}>{item.name} · {item.username}@{item.host}:{item.port}</option>)}</select></label> : <><span>Target terminal</span><strong>{target?.name || 'No connected terminal'}</strong></>}<small>{targetRunning ? 'A script is running in this terminal. Follow its output there.' : target ? 'Runs once using sh. Start at an idle shell prompt.' : 'Connect a terminal to run this script.'}</small>{onNotifyChange && <label className="scripts-notification-option"><input type="checkbox" checked={notifyOnCompletion} onChange={(event) => onNotifyChange(event.target.checked)} />Notify when scripts finish</label>}</div></div><div className="scripts-action-buttons"><button className="button secondary" aria-label="Save script" disabled={!!busy || !dirty || tooLarge} onClick={() => void save()}>{busy === 'save' ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}Save<kbd>Ctrl S</kbd></button><button className="button primary" aria-label="Review script run" disabled={!!busy || !target || targetRunning || !draft.command.trim() || tooLarge} onClick={requestRun}><Play size={15} />Run script</button></div></footer>
       </div>
     </div>
     {pendingSelection && <Modal title="Discard script changes?" onClose={closeSelection} className="small-modal"><p className="modal-description">Your edits have not been saved. Discard them before opening {pendingSelection.name || 'a new script'}?</p><div className="modal-actions"><button className="button secondary" onClick={closeSelection}>Keep editing</button><button className="button danger-button" onClick={() => { select(pendingSelection); setPendingSelection(null) }}>Discard changes</button></div></Modal>}

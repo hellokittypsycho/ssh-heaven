@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, Layers, Plus, Search, TerminalSquare, X } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Copy, Layers, MoreHorizontal, Pin, Plus, RotateCcw, Search, TerminalSquare, X } from 'lucide-react'
+import { HostIcon } from './HostIdentity'
+import type { HostProfile } from '../../shared/types'
 import { Modal } from './Modal'
 import './SessionStrip.css'
 
 export interface SessionStripSession {
   readonly id: string
-  readonly profile: { readonly name: string; readonly host: string; readonly username: string; readonly group?: string }
+  readonly profile: Pick<HostProfile, 'name' | 'host' | 'username' | 'group' | 'icon' | 'color' | 'notes'>
   readonly status: string
+  readonly pinned?: boolean
 }
 export interface SessionStripProps {
   sessions: readonly SessionStripSession[]
@@ -14,6 +17,10 @@ export interface SessionStripProps {
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNew: () => void
+  onPin?: (id: string) => void
+  onMove?: (id: string, targetId: string) => void
+  onDuplicate?: (id: string) => void
+  onReopen?: () => void
 }
 
 function statusLabel(status: string): string {
@@ -23,7 +30,7 @@ function statusClass(status: string): string {
   return status === 'connected' ? 'online' : status === 'connecting' ? 'pending' : status === 'error' ? 'failed' : 'offline'
 }
 
-export function SessionStrip({ sessions, activeId, onSelect, onClose, onNew }: SessionStripProps) {
+export function SessionStrip({ sessions, activeId, onSelect, onClose, onNew, onPin, onMove, onDuplicate, onReopen }: SessionStripProps) {
   const scroll = useRef<HTMLDivElement>(null)
   const items = useRef(new Map<string, HTMLDivElement>())
   const tabs = useRef(new Map<string, HTMLButtonElement>())
@@ -33,6 +40,9 @@ export function SessionStrip({ sessions, activeId, onSelect, onClose, onNew }: S
   const [overflow, setOverflow] = useState({ any: false, left: false, right: false })
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [actionsId, setActionsId] = useState<string | null>(null)
+  const dragging = useRef<string | null>(null)
+  const actionSession = sessions.find((session) => session.id === actionsId)
   const results = useRef<HTMLDivElement>(null)
   const searchInput = useRef<HTMLInputElement>(null)
   const instructionsId = useId()
@@ -143,22 +153,23 @@ export function SessionStrip({ sessions, activeId, onSelect, onClose, onNew }: S
     else if (row.bottom > viewport.bottom) results.current.scrollTop += row.bottom - viewport.bottom
   }
 
-  if (!sessions.length) return null
+  if (!sessions.length) return onReopen ? <div className="tabbar ssh-session-strip"><button className="button subtle compact" onClick={onReopen}><RotateCcw size={14} />Reopen closed session</button></div> : null
   return <>
     <div className="tabbar ssh-session-strip" aria-label="SSH session strip">
       <div ref={scroll} className="ssh-session-scroll" role="tablist" aria-label="Connection sessions" aria-orientation="horizontal" aria-describedby={instructionsId} onScroll={updateOverflow}>
-        {sessions.map((session) => <div key={session.id} ref={(element) => { if (element) items.current.set(session.id, element); else items.current.delete(session.id) }} className={`session-tab ${session.id === activeId ? 'active' : ''}`}>
-          <button type="button" role="tab" ref={(element) => { if (element) tabs.current.set(session.id, element); else tabs.current.delete(session.id) }} aria-selected={session.id === activeId} tabIndex={session.id === rovingId ? 0 : -1} className="session-tab-label" title={`${session.profile.username}@${session.profile.host} · ${statusLabel(session.status)}`} onFocus={(event) => { setFocusedId(session.id); if (event.currentTarget.matches(':focus-visible')) event.currentTarget.dataset.sessionKeyboardFocus = 'true' }} onBlur={(event) => event.currentTarget.removeAttribute('data-session-keyboard-focus')} onClick={(event) => { for (const button of tabs.current.values()) button.removeAttribute('data-session-keyboard-focus'); if (event.detail === 0) event.currentTarget.dataset.sessionKeyboardFocus = 'true'; onSelect(session.id); requestAnimationFrame(() => reveal(session.id)) }} onKeyDown={(event) => navigate(event, session.id)}><span className={`status-dot ${statusClass(session.status)}`} aria-hidden="true" /><span>{session.profile.name}</span></button>
-          <button type="button" className="tab-close" tabIndex={-1} aria-label={`Close ${session.profile.name} session`} title="Close session" onClick={() => onClose(session.id)}><X size={13} /></button>
+        {sessions.map((session) => <div key={session.id} ref={(element) => { if (element) items.current.set(session.id, element); else items.current.delete(session.id) }} className={`session-tab ${session.id === activeId ? 'active' : ''} ${session.pinned ? 'is-pinned' : ''}`} style={session.profile.color ? { borderTopColor: session.profile.color } : undefined} draggable={!!onMove} onDragStart={(event) => { dragging.current = session.id; event.dataTransfer.setData('text/ssh-heaven-session', session.id); event.dataTransfer.effectAllowed = 'move' }} onDragEnd={() => { dragging.current = null }} onDragOver={(event) => { if (dragging.current) { event.preventDefault(); event.dataTransfer.dropEffect = 'move' } }} onDrop={(event) => { event.preventDefault(); if (dragging.current) onMove?.(dragging.current, session.id); dragging.current = null }} onContextMenu={(event) => { event.preventDefault(); setActionsId(session.id) }}>
+          <button type="button" role="tab" ref={(element) => { if (element) tabs.current.set(session.id, element); else tabs.current.delete(session.id) }} aria-selected={session.id === activeId} tabIndex={session.id === rovingId ? 0 : -1} className="session-tab-label" title={`${session.profile.username}@${session.profile.host} · ${statusLabel(session.status)}`} onFocus={(event) => { setFocusedId(session.id); if (event.currentTarget.matches(':focus-visible')) event.currentTarget.dataset.sessionKeyboardFocus = 'true' }} onBlur={(event) => event.currentTarget.removeAttribute('data-session-keyboard-focus')} onClick={(event) => { for (const button of tabs.current.values()) button.removeAttribute('data-session-keyboard-focus'); if (event.detail === 0) event.currentTarget.dataset.sessionKeyboardFocus = 'true'; onSelect(session.id); requestAnimationFrame(() => reveal(session.id)) }} onKeyDown={(event) => { if (event.key === 'F10' && event.shiftKey) { event.preventDefault(); setActionsId(session.id) } else navigate(event, session.id) }}><span className={`status-dot ${statusClass(session.status)}`} aria-hidden="true" /><HostIcon profile={session.profile} size={13} />{session.pinned && <Pin size={11} aria-label="Pinned session" />}<span>{session.profile.name}</span></button>
+          <button type="button" className="tab-actions" aria-label={`Session actions for ${session.profile.name}`} title="Session actions" onClick={() => setActionsId(session.id)}><MoreHorizontal size={14} /></button><button type="button" className="tab-close" tabIndex={-1} aria-label={`Close ${session.profile.name} session`} title="Close session" onClick={() => onClose(session.id)}><X size={13} /></button>
         </div>)}
       </div>
-      <div className="ssh-session-controls">
+      <div className="ssh-session-controls">{onReopen && <button className="ssh-session-new" aria-label="Reopen closed session" title="Reopen closed session" onClick={onReopen}><RotateCcw size={15} /></button>}
         {overflow.any && <div className="ssh-session-scroll-controls"><button type="button" aria-label="Scroll sessions left" title="Scroll sessions left" disabled={!overflow.left} onClick={() => scrollTabs(-1)}><ChevronLeft size={16} /></button><button type="button" aria-label="Scroll sessions right" title="Scroll sessions right" disabled={!overflow.right} onClick={() => scrollTabs(1)}><ChevronRight size={16} /></button></div>}
         <button type="button" className="ssh-session-new" aria-label="Open a new connection" title="New SSH connection" onClick={onNew}><Plus size={17} /></button>
         <button type="button" className="ssh-session-menu" aria-label="All sessions" aria-description={`${connectedCount} active ${connectedCount === 1 ? 'session' : 'sessions'}; ${sessions.length} open ${sessions.length === 1 ? 'session' : 'sessions'}`} title="Find an SSH session" aria-haspopup="dialog" aria-expanded={switcherOpen} onClick={() => { setQuery(''); setSwitcherOpen(true) }}><Layers size={15} /><span className="session-count" role="status" aria-label="SSH session summary" aria-live="off" title={`${connectedCount} active ${connectedCount === 1 ? 'session' : 'sessions'}`}><span className={`status-dot ${connectedCount ? 'online' : 'offline'}`} aria-hidden="true" />{connectedCount} online</span><span className="ssh-session-total" aria-hidden="true">{sessions.length}</span><ChevronDown size={12} /></button>
       </div>
       <span id={instructionsId} className="ssh-session-sr-only">Use Left and Right arrows, Home or End to switch sessions. Delete closes the focused session.</span>
     </div>
+    {actionSession && <Modal title="Session actions" onClose={() => setActionsId(null)} className="small-modal"><p className="modal-description">{actionSession.profile.name}</p>{actionSession.profile.notes && <p className="session-host-notes">{actionSession.profile.notes}</p>}<div className="session-action-list"><button className="button secondary" onClick={() => { onPin?.(actionSession.id); setActionsId(null) }}><Pin size={14} />{actionSession.pinned ? 'Unpin session' : 'Pin session'}</button><button className="button secondary" onClick={() => { onDuplicate?.(actionSession.id); setActionsId(null) }}><Copy size={14} />Duplicate connection</button>{([-1, 1] as const).map((direction) => { const index = sessions.findIndex((item) => item.id === actionSession.id), neighbor = sessions[index + direction]; return <button key={direction} className="button secondary" disabled={!neighbor || !!neighbor.pinned !== !!actionSession.pinned} onClick={() => { if (neighbor) onMove?.(actionSession.id, neighbor.id); setActionsId(null) }}>{direction < 0 ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}{direction < 0 ? 'Move session earlier' : 'Move session later'}</button> })}<button className="button danger-button" onClick={() => { onClose(actionSession.id); setActionsId(null) }}><X size={14} />Close session</button></div></Modal>}
     {switcherOpen && <Modal title="All sessions" onClose={closeSwitcher} className="session-switcher-modal">
       <div className="session-switcher-search"><Search size={18} /><input ref={searchInput} type="search" aria-label="Search sessions" aria-controls={listId} autoComplete="off" spellCheck={false} placeholder="Find by nickname, host, user, or group…" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
         if (event.key === 'ArrowDown' && filtered.length) { event.preventDefault(); focusResult(0) }

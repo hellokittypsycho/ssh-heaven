@@ -1,5 +1,5 @@
 import type { IBufferCell, IMarker, Terminal } from '@xterm/xterm'
-import { redactIPs } from '../shared/ip-redaction'
+import { redactSensitiveText as redactIPs } from './stream-rules'
 
 interface Row { text: string; masked: string; wrapped: boolean; ansi: string }
 interface Snapshot { rows: Row[]; cols: number; height: number; base: number; type: string; cursorX: number; cursorY: number }
@@ -40,12 +40,14 @@ export class TerminalPrivacyRenderer {
   private force = true
   private disposed = false
   private first = true
+  private rulesRevision = 0
   constructor(private readonly raw: Terminal, private readonly visible: Terminal, private readonly host: HTMLElement, private readonly rendered: () => void, private readonly extraModes: ReadonlyMap<number, boolean> = new Map()) {}
 
   schedule(force = false): void {
     this.dirty = true; this.force ||= force
     if (!this.writing && !this.frame && !this.disposed) this.frame = requestAnimationFrame(() => { this.frame = 0; this.paint() })
   }
+  refreshRules(): void { this.rulesRevision++; this.previous = undefined; this.host.dataset.streamReady = 'false'; this.schedule(true) }
   dispose(): void {
     this.disposed = true; cancelAnimationFrame(this.frame); this.marker?.dispose()
   }
@@ -81,7 +83,8 @@ export class TerminalPrivacyRenderer {
         const chars = value.getChars() || ' '
         const style = cellStyle(value)
         if (style !== previousStyle) { ansi += style; previousStyle = style }
-        ansi += safe.slice(offset, offset + chars.length)
+        const rendered = safe.slice(offset, offset + chars.length)
+        ansi += rendered === chars ? chars : '•'.repeat(Math.max(1, value.getWidth()))
         offset += chars.length
       }
       return { text, masked: safe, wrapped: line.isWrapped, ansi: `${ansi}\x1b[0m` }
@@ -95,6 +98,7 @@ export class TerminalPrivacyRenderer {
   }
   private paint(): void {
     if (this.disposed || !this.dirty) return
+    const revision = this.rulesRevision
     this.dirty = false
     const old = this.previous
     const trim = this.marker ? this.marker.isDisposed ? old?.rows.length ?? 0 : Math.max(0, this.markerLine - this.marker.line) : old?.type === 'normal' ? old.rows.length : 0
@@ -137,6 +141,7 @@ export class TerminalPrivacyRenderer {
     this.visible.write(output, () => {
       if (this.disposed) return
       this.writing = false
+      if (revision !== this.rulesRevision) { this.schedule(true); return }
       if (following) this.visible.scrollToBottom()
       else this.visible.scrollToLine(Math.max(0, viewport - trim))
       this.host.dataset.streamReady = 'true'; this.host.setAttribute('aria-busy', 'false')

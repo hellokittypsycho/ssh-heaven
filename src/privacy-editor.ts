@@ -1,6 +1,6 @@
-import { RangeSetBuilder, type Extension } from '@codemirror/state'
+import { RangeSetBuilder, type EditorState, type Extension } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view'
-import { findIPRanges, redactIPs } from '../shared/ip-redaction'
+import { findSensitiveRanges as findIPRanges, redactSensitiveText as redactIPs } from './stream-rules'
 
 class MaskedAddress extends WidgetType {
   constructor(readonly length: number) { super() }
@@ -9,7 +9,7 @@ class MaskedAddress extends WidgetType {
     const element = document.createElement('span')
     element.className = 'stream-private-widget'
     element.textContent = '•'.repeat(this.length)
-    element.setAttribute('aria-label', 'Hidden IP address')
+    element.setAttribute('aria-label', 'Hidden sensitive text')
     return element
   }
 }
@@ -33,16 +33,60 @@ function maskAnnouncements(view: EditorView): void {
   }
 }
 
+/** Match against the full document, then mask intersections with copied ranges. */
+export function redactEditorClipboard(value: string, state: EditorState): string {
+  const document = state.doc.toString()
+  const sensitive = findIPRanges(document)
+  const lineBreak = (text: string) => state.lineBreak === '\n' ? text : text.replace(/\n/g, state.lineBreak)
+  const fragment = (from: number, to: number) => {
+    let safe = '', offset = from
+    for (const range of sensitive) {
+      if (range.end <= from) continue
+      if (range.start >= to) break
+      const start = Math.max(from, range.start), end = Math.min(to, range.end)
+      safe += document.slice(offset, start) + '•'.repeat(end - start)
+      offset = end
+    }
+    return { raw: lineBreak(document.slice(from, to)), safe: lineBreak(safe + document.slice(offset, to)) }
+  }
+  // This mirrors CodeMirror's copiedRange: nonempty selections are joined by
+  // the configured line separator. With only cursors, each unique line is
+  // copied once, without its final newline.
+  const selected = state.selection.ranges.filter((range) => !range.empty)
+  const pieces = selected.length ? selected.map((range) => fragment(range.from, range.to)) : (() => {
+    const result: { raw: string; safe: string }[] = []
+    let previousLine = -1
+    for (const range of state.selection.ranges) {
+      const line = state.doc.lineAt(range.from)
+      if (line.number > previousLine) result.push(fragment(line.from, line.to))
+      previousLine = line.number
+    }
+    return result
+  })()
+  if (value === pieces.map((piece) => piece.raw).join(state.lineBreak)) return pieces.map((piece) => piece.safe).join(state.lineBreak)
+  // Dragging a selection uses only its main range, even with several cursors.
+  const main = fragment(state.selection.main.from, state.selection.main.to)
+  if (value === main.raw) return main.safe
+  // Another output transform can make source positions ambiguous. If this
+  // document contains sensitive text, fail closed rather than rematching a
+  // possibly partial secret. Preserve line separators and string width.
+  return sensitive.length ? value.replace(/[^\r\n]/g, '•') : redactIPs(value)
+}
+
 /** Only rendered text changes. Saving/running still uses the original document. */
 export function streamPrivacyExtension(enabled: boolean): Extension {
   if (!enabled) return []
-  return [
-    ViewPlugin.fromClass(class {
+  const privacy = ViewPlugin.fromClass(class {
       decorations: DecorationSet
       constructor(view: EditorView) { this.decorations = masks(view); maskAnnouncements(view) }
       update(update: ViewUpdate) { if (update.docChanged || update.viewportChanged) this.decorations = masks(update.view) }
-    }, { decorations: (plugin) => plugin.decorations }),
+    }, {
+      decorations: (plugin) => plugin.decorations,
+      provide: (plugin) => EditorView.atomicRanges.of((view) => view.plugin(plugin)?.decorations ?? Decoration.none),
+    })
+  return [
+    privacy,
     EditorView.updateListener.of((update) => maskAnnouncements(update.view)),
-    EditorView.clipboardOutputFilter.of((value) => redactIPs(value))
+    EditorView.clipboardOutputFilter.of(redactEditorClipboard)
   ]
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync, statSync, writeFileSync } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -62,6 +62,276 @@ async function harness() {
     }
   }
 }
+
+function latch() {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => { resolve = done })
+  return { promise, resolve }
+}
+const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+
+test('pausing an upload holds its original stream, temporary sibling and byte offsets until resume, preserving the old destination', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const source = path.join(h.local, 'paused-upload.bin'), bytes = randomBytes(512 * 1024)
+    const original = Buffer.from('Original destination while paused')
+    await fs.writeFile(source, bytes); await fs.writeFile(path.join(h.fixture.root, 'paused-upload.bin'), original)
+    const sftp = await h.service.getSftp(h.ownerId, h.sessionId)
+    const create = sftp.createWriteStream.bind(sftp), write = sftp.write.bind(sftp)
+    let streams = 0
+    const positions: { position: number; length: number }[] = []
+    sftp.createWriteStream = ((...args: Parameters<typeof create>) => { streams++; return create(...args) }) as typeof sftp.createWriteStream
+    // ssh2 recursively splits large writes at nonzero buffer offsets. Count
+    // the stream's original writes once, rather than that internal splitting.
+    sftp.write = ((...args: Parameters<typeof write>) => { if (args[2] === 0) positions.push({ position: args[4], length: args[3] }); return write(...args) }) as typeof sftp.write
+    h.manager.setBandwidthLimit(h.ownerId, 512 * 1024)
+    const paused = latch()
+    let id = '', offset = 0
+    h.setHook((event) => {
+      if (!id && event.status === 'running' && event.transferred >= 64 * 1024) { id = event.id; offset = event.transferred; h.manager.pause(h.ownerId, id); paused.resolve() }
+    })
+    const uploading = h.manager.upload(h.ownerId, h.sessionId, [source], '/', async () => true)
+    await paused.promise
+    assert.throws(() => h.manager.resume(999, id), /another window/)
+    await delay(100)
+    const temporary = (await fs.readdir(h.fixture.root)).find((name) => name.endsWith('.part'))!
+    assert.ok(temporary)
+    const size = (await fs.stat(path.join(h.fixture.root, temporary))).size
+    await delay(150)
+    assert.equal((await fs.stat(path.join(h.fixture.root, temporary))).size, size, 'Pause must stop subsequent writes through backpressure')
+    assert.deepEqual(await fs.readFile(path.join(h.fixture.root, 'paused-upload.bin')), original)
+    const pausedEvent = [...h.events].reverse().find((event) => event.id === id)!
+    assert.equal(pausedEvent.status, 'paused'); assert.equal(pausedEvent.transferred, offset)
+    assert.equal(pausedEvent.bytesPerSecond, 0); assert.equal(pausedEvent.etaSeconds, undefined)
+    assert.ok(h.events.some((event) => event.bytesPerSecond! > 0 && Number.isFinite(event.etaSeconds)))
+    await h.assertShellUsable()
+    h.manager.setBandwidthLimit(h.ownerId, 0); h.manager.resume(h.ownerId, id)
+    assert.deepEqual((await uploading).files, ['/paused-upload.bin'])
+    assert.equal(streams, 1, 'Resume must not reopen or truncate the upload stream')
+    assert.equal(positions[0].position, 0)
+    for (let index = 1; index < positions.length; index++) assert.equal(positions[index].position, positions[index - 1].position + positions[index - 1].length, 'Each resumed write must continue at the next offset')
+    assert.deepEqual(await fs.readFile(path.join(h.fixture.root, 'paused-upload.bin')), bytes)
+    assert.equal((await fs.readdir(h.fixture.root)).some((name) => name.endsWith('.part')), false)
+    assert.equal(h.events.filter((event) => event.name === 'paused-upload.bin' && event.status === 'completed').length, 1)
+  } finally { await h.close() }
+})
+
+test('paused downloads resume the same remote reader without re-reading offset zero, and paused cancellation cleans local partial bytes', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const bytes = randomBytes(768 * 1024), destination = path.join(h.local, 'downloads')
+    await fs.mkdir(destination); await fs.writeFile(path.join(h.fixture.root, 'paused-download.bin'), bytes)
+    const sftp = await h.service.getSftp(h.ownerId, h.sessionId)
+    const create = sftp.createReadStream.bind(sftp), read = sftp.read.bind(sftp)
+    let streams = 0
+    const positions: number[] = []
+    sftp.createReadStream = ((...args: Parameters<typeof create>) => { streams++; return create(...args) }) as typeof sftp.createReadStream
+    sftp.read = ((...args: Parameters<typeof read>) => { positions.push(args[4]); return read(...args) }) as typeof sftp.read
+    h.manager.setBandwidthLimit(h.ownerId, 512 * 1024)
+    const paused = latch()
+    let id = ''
+    h.setHook((event) => { if (!id && event.status === 'running' && event.transferred >= 64 * 1024) { id = event.id; h.manager.pause(h.ownerId, id); paused.resolve() } })
+    const downloading = h.manager.download(h.ownerId, h.sessionId, ['/paused-download.bin'], destination, async () => true)
+    await paused.promise; await delay(100)
+    const temporary = (await fs.readdir(destination)).find((name) => name.endsWith('.part'))!
+    const size = (await fs.stat(path.join(destination, temporary))).size, reads = positions.length
+    await delay(100)
+    assert.equal((await fs.stat(path.join(destination, temporary))).size, size)
+    assert.equal(positions.length, reads, 'A paused remote reader must stop after its bounded stream buffers fill')
+    assert.ok(size < bytes.length)
+    h.manager.setBandwidthLimit(h.ownerId, 0); h.manager.resume(h.ownerId, id)
+    await downloading
+    assert.equal(streams, 1); assert.equal(positions.filter((offset) => offset === 0).length, 1)
+    for (let index = 1; index < positions.length; index++) assert.ok(positions[index] > positions[index - 1], 'Resumed remote reads must advance rather than restart')
+    assert.deepEqual(await fs.readFile(path.join(destination, 'paused-download.bin')), bytes)
+
+    const original = Buffer.from('Keep this local destination on cancel')
+    await fs.writeFile(path.join(destination, 'paused-download.bin'), original)
+    h.manager.setBandwidthLimit(h.ownerId, 128 * 1024)
+    id = ''; const canceledPause = latch()
+    h.setHook((event) => { if (!id && event.status === 'running' && event.transferred > 0) { id = event.id; h.manager.pause(h.ownerId, id); canceledPause.resolve() } })
+    const canceled = h.manager.download(h.ownerId, h.sessionId, ['/paused-download.bin'], destination, async () => true)
+    await canceledPause.promise
+    const started = performance.now(); h.manager.cancel(h.ownerId, id)
+    assert.equal((await canceled).canceled, true)
+    assert.ok(performance.now() - started < 1500, 'Paused/throttled cancellation must wake pending gates promptly')
+    assert.deepEqual(await fs.readFile(path.join(destination, 'paused-download.bin')), original)
+    assert.deepEqual(await fs.readdir(destination), ['paused-download.bin'])
+    await h.assertShellUsable()
+  } finally { await h.close() }
+})
+
+test('queued jobs can be reordered around paused jobs, while active paused jobs retain their queue slot and owner checks', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const names = ['first.bin', 'second.bin', 'third.bin']
+    await Promise.all(names.map((name) => fs.writeFile(path.join(h.local, name), randomBytes(4096))))
+    const ids = new Map<string, string>(), paused = latch(), thirdDone = latch()
+    let held = false
+    h.setHook((event) => {
+      ids.set(event.name, event.id)
+      if (event.name === 'second.bin' && event.status === 'queued' && !held) { held = true; h.manager.pause(h.ownerId, event.id) }
+      if (event.name === 'first.bin' && event.status === 'running') { h.manager.pause(h.ownerId, event.id); paused.resolve() }
+      if (event.name === 'third.bin' && event.status === 'completed') thirdDone.resolve()
+    })
+    const uploading = h.manager.upload(h.ownerId, h.sessionId, names.map((name) => path.join(h.local, name)), '/', async () => true)
+    await paused.promise
+    const first = ids.get('first.bin')!, second = ids.get('second.bin')!, third = ids.get('third.bin')!
+    assert.throws(() => h.manager.move(999, third, -1), /another window/)
+    assert.throws(() => h.manager.move(h.ownerId, first, 1), /Only waiting/)
+    assert.throws(() => h.manager.move(h.ownerId, third, 0), /up or down/)
+    h.manager.move(h.ownerId, third, -1)
+    assert.equal([...h.events].reverse().find((event) => event.id === third)!.queuePosition, 1)
+    assert.equal([...h.events].reverse().find((event) => event.id === second)!.queuePosition, 2)
+    h.setHook((event) => { if (event.name === 'third.bin' && event.status === 'completed') thirdDone.resolve() })
+    h.manager.resume(h.ownerId, first)
+    await thirdDone.promise
+    assert.deepEqual(h.events.filter((event) => event.status === 'completed').map((event) => event.name), ['first.bin', 'third.bin'])
+    assert.equal([...h.events].reverse().find((event) => event.id === second)!.status, 'paused')
+    await assert.rejects(fs.stat(path.join(h.fixture.root, 'second.bin')), { code: 'ENOENT' })
+    h.manager.resume(h.ownerId, second)
+    await uploading
+    assert.deepEqual(h.events.filter((event) => event.status === 'completed').map((event) => event.name), ['first.bin', 'third.bin', 'second.bin'])
+  } finally { await h.close() }
+})
+
+test('the bandwidth setting caps aggregate bytes across connections, supports live changes, and rejects invalid limits', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    for (const value of [-1, 1, 1023, 1024 ** 3 + 1, Infinity, NaN, '1024', 2.5]) assert.throws(() => h.manager.setBandwidthLimit(h.ownerId, value), /bandwidth|KiB/)
+    assert.equal(h.manager.getBandwidthLimit(h.ownerId), 0)
+    h.manager.setBandwidthLimit(h.ownerId, 256 * 1024)
+    assert.equal(h.manager.getBandwidthLimit(h.ownerId), 256 * 1024)
+    assert.equal(h.manager.getBandwidthLimit(999), 0, 'Another window cannot share this window\'s bandwidth setting')
+    const secondSession = 'transfer-second-session'
+    await h.service.connect({ sessionId: secondSession, password: h.fixture.password, profile: { id: 'second-profile', name: 'Second fixture', host: h.fixture.host, port: h.fixture.port, username: h.fixture.username, authType: 'password' } }, h.ownerId)
+    const bytes = randomBytes(128 * 1024), sources = ['limited-first.bin', 'limited-second.bin'].map((name) => path.join(h.local, name))
+    await Promise.all(sources.map((source) => fs.writeFile(source, bytes)))
+    const started = performance.now()
+    await Promise.all([h.manager.upload(h.ownerId, h.sessionId, [sources[0]], '/', async () => true), h.manager.upload(h.ownerId, secondSession, [sources[1]], '/', async () => true)])
+    assert.ok(performance.now() - started >= 800, 'Two connections must share 256 KiB/s rather than each receiving the full limit')
+    assert.ok(h.events.filter((event) => event.status === 'running').every((event) => event.bandwidthLimit === 256 * 1024))
+    for (const source of sources) assert.deepEqual(await fs.readFile(path.join(h.fixture.root, path.basename(source))), bytes)
+    h.manager.setBandwidthLimit(h.ownerId, 1024)
+    const running = latch(); let id = ''
+    h.setHook((event) => { if (event.name === 'limited-first.bin' && event.status === 'running' && event.total > 0 && !id) { id = event.id; running.resolve() } })
+    const changing = h.manager.upload(h.ownerId, h.sessionId, [sources[0]], '/', async () => true)
+    await running.promise
+    const changed = performance.now(); h.manager.setBandwidthLimit(h.ownerId, 0)
+    await changing
+    assert.ok(performance.now() - changed < 2000, 'Removing a cap must wake outstanding throttle waits')
+  } finally { await h.close() }
+})
+
+test('folder pause/resume keeps one aggregate identity and progress total across all child streams', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const source = path.join(h.local, 'paused-folder'), first = randomBytes(96 * 1024), second = randomBytes(80 * 1024)
+    await fs.mkdir(source); await fs.writeFile(path.join(source, 'a.bin'), first); await fs.writeFile(path.join(source, 'b.bin'), second)
+    h.manager.setBandwidthLimit(h.ownerId, 256 * 1024)
+    const paused = latch(); let id = '', offset = 0
+    h.setHook((event) => { if (!id && event.status === 'running' && event.transferred >= 32 * 1024) { id = event.id; offset = event.transferred; h.manager.pause(h.ownerId, id); paused.resolve() } })
+    const uploading = h.manager.upload(h.ownerId, h.sessionId, [source], '/', async () => true)
+    await paused.promise; await delay(100)
+    assert.ok(h.events.every((event) => event.id === id))
+    assert.equal([...h.events].reverse()[0].total, first.length + second.length)
+    assert.equal([...h.events].reverse()[0].transferred, offset)
+    h.manager.setBandwidthLimit(h.ownerId, 0); h.manager.resume(h.ownerId, id)
+    await uploading
+    const complete = h.events.at(-1)!
+    assert.equal(complete.status, 'completed'); assert.equal(complete.transferred, first.length + second.length)
+    assert.equal(complete.total, complete.transferred)
+    assert.deepEqual(await fs.readFile(path.join(h.fixture.root, 'paused-folder', 'a.bin')), first)
+    assert.deepEqual(await fs.readFile(path.join(h.fixture.root, 'paused-folder', 'b.bin')), second)
+  } finally { await h.close() }
+})
+
+test('source changes while paused fail safely; changed destinations require renewed overwrite approval before resume can commit', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const source = path.join(h.local, 'changed.bin'), bytes = randomBytes(256 * 1024), original = Buffer.from('Original destination')
+    await fs.writeFile(source, bytes); await fs.writeFile(path.join(h.fixture.root, 'changed.bin'), original)
+    h.manager.setBandwidthLimit(h.ownerId, 256 * 1024)
+    const paused = latch(); let id = ''
+    h.setHook((event) => { if (!id && event.status === 'running' && event.transferred > 0) { id = event.id; h.manager.pause(h.ownerId, id); paused.resolve() } })
+    const uploading = h.manager.upload(h.ownerId, h.sessionId, [source], '/', async () => true)
+    const failed = assert.rejects(uploading, /source file changed/)
+    await paused.promise
+    await fs.writeFile(source, randomBytes(bytes.length))
+    h.manager.setBandwidthLimit(h.ownerId, 0); h.manager.resume(h.ownerId, id)
+    await failed
+    assert.deepEqual(await fs.readFile(path.join(h.fixture.root, 'changed.bin')), original)
+    assert.equal((await fs.readdir(h.fixture.root)).some((name) => name.endsWith('.part')), false)
+    const nextPause = latch(); id = ''; let confirmations = 0
+    h.manager.setBandwidthLimit(h.ownerId, 256 * 1024)
+    h.setHook((event) => { if (!id && event.status === 'running' && event.transferred > 0) { id = event.id; h.manager.pause(h.ownerId, id); nextPause.resolve() } })
+    const replacement = h.manager.upload(h.ownerId, h.sessionId, [source], '/', async () => ++confirmations === 1)
+    await nextPause.promise
+    const changed = Buffer.from('A different destination appeared while paused')
+    await fs.writeFile(path.join(h.fixture.root, 'changed.bin'), changed)
+    h.manager.setBandwidthLimit(h.ownerId, 0); h.manager.resume(h.ownerId, id)
+    assert.equal((await replacement).canceled, true); assert.equal(confirmations, 2)
+    assert.deepEqual(await fs.readFile(path.join(h.fixture.root, 'changed.bin')), changed)
+    await h.assertShellUsable()
+  } finally { await h.close() }
+})
+
+test('exclusive temporary-file collisions never delete pre-existing local or remote siblings', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const source = path.join(h.local, 'collision.bin'), original = Buffer.from('Unrelated existing temporary sibling')
+    await fs.writeFile(source, randomBytes(64 * 1024))
+    let remotePartial = ''
+    h.setHook((event) => {
+      if (event.direction === 'upload' && event.status === 'queued') {
+        remotePartial = path.join(h.fixture.root, `.ssh-heaven-${event.id}.part`)
+        writeFileSync(remotePartial, original, { flag: 'wx' })
+      }
+    })
+    await assert.rejects(h.manager.upload(h.ownerId, h.sessionId, [source], '/', async () => true), /not be transferred/)
+    assert.deepEqual(await fs.readFile(remotePartial), original)
+    await assert.rejects(fs.stat(path.join(h.fixture.root, 'collision.bin')), { code: 'ENOENT' })
+    const downloads = path.join(h.local, 'downloads')
+    await fs.mkdir(downloads)
+    const preserved = Buffer.from('Original download destination')
+    await fs.writeFile(path.join(downloads, 'welcome.txt'), preserved)
+    let localPartial = ''
+    h.setHook((event) => {
+      if (event.direction === 'download' && event.status === 'queued') {
+        localPartial = path.join(downloads, `.ssh-heaven-${event.id}.part`)
+        writeFileSync(localPartial, original, { flag: 'wx' })
+      }
+    })
+    await assert.rejects(h.manager.download(h.ownerId, h.sessionId, ['/welcome.txt'], downloads, async () => true), /not be transferred/)
+    assert.deepEqual(await fs.readFile(localPartial), original)
+    assert.deepEqual(await fs.readFile(path.join(downloads, 'welcome.txt')), preserved)
+    await h.assertShellUsable()
+  } finally { await h.close() }
+})
+
+test('a replaced local partial cannot be committed or removed after a paused download resumes', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const downloads = path.join(h.local, 'downloads'), bytes = randomBytes(256 * 1024)
+    await fs.mkdir(downloads); await fs.writeFile(path.join(h.fixture.root, 'replace-part.bin'), bytes)
+    const original = Buffer.from('Original destination must remain'), foreign = Buffer.from('An unrelated replacement file')
+    await fs.writeFile(path.join(downloads, 'replace-part.bin'), original)
+    h.manager.setBandwidthLimit(h.ownerId, 128 * 1024)
+    let id = ''; const paused = latch()
+    h.setHook((event) => { if (!id && event.status === 'running' && event.transferred > 0) { id = event.id; h.manager.pause(h.ownerId, id); paused.resolve() } })
+    const downloading = h.manager.download(h.ownerId, h.sessionId, ['/replace-part.bin'], downloads, async () => true)
+    const failed = assert.rejects(downloading, /temporary download file changed/)
+    await paused.promise
+    const partial = path.join(downloads, `.ssh-heaven-${id}.part`)
+    await fs.rename(partial, path.join(downloads, 'renamed-by-another-operation.part'))
+    await fs.writeFile(partial, foreign, { flag: 'wx' })
+    h.manager.setBandwidthLimit(h.ownerId, 0); h.manager.resume(h.ownerId, id)
+    await failed
+    assert.deepEqual(await fs.readFile(partial), foreign)
+    assert.deepEqual(await fs.readFile(path.join(downloads, 'replace-part.bin')), original)
+    await h.assertShellUsable()
+  } finally { await h.close() }
+})
 
 test('recursive folders round-trip binary files and empty directories with aggregate progress', { timeout: 20_000 }, async () => {
   const h = await harness()

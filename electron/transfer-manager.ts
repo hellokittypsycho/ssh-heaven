@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { createReadStream, createWriteStream } from 'node:fs'
-import { lstat, rename, unlink } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { lstat, open, rename, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { Transform, type Readable, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -8,6 +8,7 @@ import type { SFTPWrapper, Stats } from 'ssh2'
 import type { TransferJob, TransferResult } from '../shared/types'
 import { childLocalPath, errorMessage, identifier, remoteFilename, remotePath } from './validation'
 import { ensureLocalDirectory, ensureRemoteDirectory, scanLocalTree, scanRemoteTree } from './transfer-tree'
+import { TransferBandwidth, TransferGate } from './transfer-flow'
 
 export type ConfirmReplacement = (destination: string, signal: AbortSignal) => Promise<boolean>
 
@@ -22,6 +23,12 @@ interface Task {
   lastProgress: number
   parent?: Task
   progressBase?: number
+  gate: TransferGate
+  started: boolean
+  activeChild?: Task
+  activeSince?: number
+  activeMilliseconds: number
+  samples: { time: number; bytes: number }[]
 }
 
 function rpc<T>(invoke: (callback: (error: Error | null | undefined, result: T) => void) => void, timeout = 15_000): Promise<T> {
@@ -124,6 +131,7 @@ export class TransferManager {
   private readonly jobs = new Map<string, Task>()
   private readonly queues = new Map<string, Task[]>()
   private readonly draining = new Set<string>()
+  private readonly bandwidth = new Map<number, TransferBandwidth>()
 
   constructor(
     private readonly getSftp: (ownerId: number, sessionId: string) => Promise<SFTPWrapper>,
@@ -173,6 +181,73 @@ export class TransferManager {
     this.cancelTask(task)
   }
 
+  getBandwidthLimit(ownerId: number): number { return this.ownerBandwidth(ownerId).limit }
+
+  setBandwidthLimit(ownerId: number, value: unknown): void {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value !== 0 && (value < 1024 || value > 1024 ** 3)) throw new Error('Use 0 for unlimited bandwidth, or between 1 KiB/s and 1 GiB/s.')
+    this.ownerBandwidth(ownerId).set(value)
+    for (const task of this.jobs.values()) if (task.ownerId === ownerId && this.pending(task)) this.emit(task)
+  }
+
+  pause(ownerId: number, value: unknown): void {
+    const task = this.owned(ownerId, value)
+    if (!['running', 'queued'].includes(task.event.status) || task.committing || task.activeChild?.committing) return
+    if (task.activeSince !== undefined) task.activeMilliseconds += performance.now() - task.activeSince
+    task.activeSince = undefined
+    task.gate.set(true)
+    task.event.status = 'paused'
+    this.emit(task)
+  }
+
+  resume(ownerId: number, value: unknown): void {
+    const task = this.owned(ownerId, value)
+    if (task.event.status !== 'paused') return
+    task.event.status = task.started ? 'running' : 'queued'
+    if (task.started) {
+      task.activeSince = performance.now()
+      task.samples = [{ time: task.activeMilliseconds, bytes: task.event.transferred }]
+    }
+    task.gate.set(false)
+    this.emit(task)
+    queueMicrotask(() => { void this.drain(this.key(task)) })
+  }
+
+  move(ownerId: number, value: unknown, direction: unknown): void {
+    const task = this.owned(ownerId, value)
+    if (direction !== -1 && direction !== 1) throw new Error('Choose whether to move the transfer up or down.')
+    if (task.started || !this.pending(task)) throw new Error('Only waiting transfers can be reordered.')
+    const key = this.key(task), queue = this.queues.get(key)
+    const index = queue?.indexOf(task) ?? -1
+    if (!queue || index < 0) throw new Error('This transfer is no longer waiting in the queue.')
+    const next = index + direction
+    if (next < 0 || next >= queue.length) return
+    ;[queue[index], queue[next]] = [queue[next], queue[index]]
+    this.refreshQueue(key)
+  }
+
+  private owned(ownerId: number, value: unknown): Task {
+    const task = this.jobs.get(identifier(value, 'transfer identifier'))
+    if (!task || task.ownerId !== ownerId) throw new Error('This transfer is unavailable or belongs to another window.')
+    return task
+  }
+  private pending(task: Task): boolean { return ['queued', 'running', 'paused'].includes(task.event.status) }
+  private key(task: Task): string { return `${task.ownerId}:${task.event.sessionId}` }
+  private ownerBandwidth(ownerId: number): TransferBandwidth {
+    if (!Number.isSafeInteger(ownerId) || ownerId < 1) throw new Error('Invalid transfer window.')
+    let bandwidth = this.bandwidth.get(ownerId)
+    if (!bandwidth) { bandwidth = new TransferBandwidth(); this.bandwidth.set(ownerId, bandwidth) }
+    return bandwidth
+  }
+
+  private refreshQueue(key: string): void {
+    const waiting = (this.queues.get(key) ?? []).filter((task) => !task.started && this.pending(task))
+    if (waiting.length) this.queues.set(key, waiting)
+    else this.queues.delete(key)
+    const changed = waiting.filter((task, index) => task.event.queuePosition !== index + 1)
+    waiting.forEach((task, index) => { task.event.queuePosition = index + 1 })
+    for (const task of changed) if (this.pending(task)) this.emit(task)
+  }
+
   async cancelSession(ownerId: number, sessionValue: unknown): Promise<void> {
     const sessionId = identifier(sessionValue, 'session identifier')
     await this.cancelMatching((task) => task.ownerId === ownerId && task.event.sessionId === sessionId)
@@ -180,31 +255,33 @@ export class TransferManager {
 
   async cancelOwner(ownerId: number): Promise<void> {
     await this.cancelMatching((task) => task.ownerId === ownerId)
+    this.bandwidth.delete(ownerId)
   }
 
   async dispose(): Promise<void> {
     await this.cancelMatching(() => true)
+    this.bandwidth.clear()
   }
 
   private async cancelMatching(matches: (task: Task) => boolean): Promise<void> {
-    const tasks = [...this.jobs.values()].filter((task) => matches(task) && (task.event.status === 'queued' || task.event.status === 'running'))
+    const tasks = [...this.jobs.values()].filter((task) => matches(task) && this.pending(task))
     for (const task of tasks) this.cancelTask(task)
     await Promise.all(tasks.map((task) => task.promise))
   }
 
   private cancelTask(task: Task): void {
-    if (task.committing || (task.event.status !== 'queued' && task.event.status !== 'running')) return
+    if (task.committing || !this.pending(task)) return
     task.controller.abort()
-    if (task.event.status === 'queued') this.finish(task, 'canceled', 'Canceled before starting.')
+    if (!task.started) this.finish(task, 'canceled', 'Canceled before starting.')
   }
 
   private ensureCapacity(count: number): void {
-    const pending = [...this.jobs.values()].filter((task) => task.event.status === 'queued' || task.event.status === 'running').length
+    const pending = [...this.jobs.values()].filter((task) => this.pending(task)).length
     if (pending + count > 200) throw new Error('The transfer queue is full (200 pending files).')
     // Keep completed metadata bounded. Active jobs are never discarded.
     for (const [id, task] of this.jobs) {
       if (this.jobs.size + count <= 500) break
-      if (task.event.status !== 'queued' && task.event.status !== 'running') this.jobs.delete(id)
+      if (!this.pending(task)) this.jobs.delete(id)
     }
   }
 
@@ -213,6 +290,7 @@ export class TransferManager {
     const promise = new Promise<TransferJob>((resolve) => { complete = resolve })
     const task: Task = {
       ownerId, action, complete, promise, controller: new AbortController(), committing: false, lastProgress: 0,
+      gate: new TransferGate(), started: false, activeMilliseconds: 0, samples: [],
       event: { id: randomUUID(), sessionId, direction, source, destination, name, transferred: 0, total: 0, status: 'queued', startedAt: Date.now() }
     }
     this.jobs.set(task.event.id, task)
@@ -220,7 +298,7 @@ export class TransferManager {
     const queue = this.queues.get(key) ?? []
     queue.push(task)
     this.queues.set(key, queue)
-    this.emit(task)
+    this.refreshQueue(key)
     queueMicrotask(() => { void this.drain(key) })
     return promise
   }
@@ -229,12 +307,18 @@ export class TransferManager {
     if (this.draining.has(key)) return
     this.draining.add(key)
     try {
-      const queue = this.queues.get(key)
-      while (queue?.length) {
-        const task = queue.shift()!
-        if (task.event.status !== 'queued') continue
+      while (true) {
+        const queue = this.queues.get(key)
+        const next = queue?.findIndex((task) => task.event.status === 'queued') ?? -1
+        if (!queue || next < 0) break
+        const task = queue.splice(next, 1)[0]
+        task.started = true
+        task.event.queuePosition = undefined
         task.event.status = 'running'
         task.event.startedAt = Date.now()
+        task.activeSince = performance.now()
+        task.samples = [{ time: 0, bytes: 0 }]
+        this.refreshQueue(key)
         this.emit(task)
         try {
           await task.action(task)
@@ -244,24 +328,38 @@ export class TransferManager {
         }
       }
     } finally {
-      this.queues.delete(key)
+      this.refreshQueue(key)
       this.draining.delete(key)
     }
   }
 
   private emit(task: Task): void {
-    if (task.parent) {
-      task.parent.event.transferred = (task.progressBase ?? 0) + task.event.transferred
-      this.notify(task.parent.ownerId, { ...task.parent.event })
-    } else this.notify(task.ownerId, { ...task.event })
+    const root = task.parent ?? task
+    if (task.parent) root.event.transferred = (task.progressBase ?? 0) + task.event.transferred
+    root.event.bandwidthLimit = this.ownerBandwidth(root.ownerId).limit
+    root.event.bytesPerSecond = 0
+    root.event.etaSeconds = undefined
+    if (root.event.status === 'running' && root.event.transferred > 0) {
+      const now = root.activeMilliseconds + (root.activeSince === undefined ? 0 : performance.now() - root.activeSince)
+      const samples = root.samples
+      const previous = samples.at(-1)
+      if (!previous || now !== previous.time || root.event.transferred !== previous.bytes) samples.push({ time: now, bytes: root.event.transferred })
+      while (samples.length > 64 || samples.length > 2 && samples[1].time < now - 3000) samples.shift()
+      const first = samples[0]
+      root.event.bytesPerSecond = Math.max(0, Math.round((root.event.transferred - first.bytes) / Math.max(0.2, (now - first.time) / 1000)))
+      if (root.event.bytesPerSecond > 0 && root.event.total >= root.event.transferred) root.event.etaSeconds = Math.ceil((root.event.total - root.event.transferred) / root.event.bytesPerSecond)
+    }
+    this.notify(root.ownerId, { ...root.event })
   }
 
   private finish(task: Task, status: 'completed' | 'failed' | 'canceled', message?: string): void {
     task.event.status = status
     task.event.message = message
     task.event.finishedAt = Date.now()
+    task.event.queuePosition = undefined
     this.emit(task)
     task.complete({ ...task.event })
+    this.refreshQueue(this.key(task))
   }
 
   private async batch(promises: Promise<TransferJob>[]): Promise<TransferResult> {
@@ -273,18 +371,32 @@ export class TransferManager {
   }
 
   private progress(task: Task): Transform {
+    const manager = this
+    const bandwidth = this.ownerBandwidth(task.ownerId)
     return new Transform({
-      transform: (chunk: Buffer, _encoding, callback) => {
-        task.event.transferred += chunk.length
-        const now = Date.now()
-        if (now - task.lastProgress >= 80 || task.event.transferred >= task.event.total) {
-          task.lastProgress = now
-          this.emit(task)
+      highWaterMark: 64 * 1024,
+      transform(chunk: Buffer, _encoding, callback) {
+        const send = async () => {
+          let offset = 0
+          while (offset < chunk.length) {
+            const length = await bandwidth.acquire(chunk.length - offset, task.gate, task.controller.signal)
+            await task.gate.wait(task.controller.signal)
+            this.push(chunk.subarray(offset, offset + length))
+            offset += length
+            task.event.transferred += length
+            const now = Date.now()
+            if (now - task.lastProgress >= 80 || task.event.transferred >= task.event.total) {
+              task.lastProgress = now
+              manager.emit(task)
+            }
+          }
         }
-        callback(null, chunk)
+        void send().then(() => callback(), (error: Error) => callback(error))
       }
     })
   }
+
+  private async checkpoint(task: Task): Promise<void> { await task.gate.wait(task.controller.signal) }
 
   private async transfer(task: Task, reader: Readable, writer: Writable): Promise<void> {
     try {
@@ -302,8 +414,9 @@ export class TransferManager {
 
   private async runTree(task: Task, confirm: ConfirmReplacement): Promise<void> {
     const signal = task.controller.signal
-    signal.throwIfAborted()
+    await this.checkpoint(task)
     const sftp = await abortable(this.getSftp(task.ownerId, task.event.sessionId), signal)
+    await this.checkpoint(task)
     const source = task.event.direction === 'upload' ? await lstat(task.event.source) : await remoteStat(sftp, task.event.source)
     if (source?.isSymbolicLink()) throw new Error('Transfers do not follow symbolic links. Select the target directly instead.')
     if (!source?.isDirectory()) return task.event.direction === 'upload' ? this.runUpload(task, confirm) : this.runDownload(task, confirm)
@@ -314,7 +427,7 @@ export class TransferManager {
     this.emit(task)
     let completedBytes = 0
     for (const entry of entries) {
-      signal.throwIfAborted()
+      await this.checkpoint(task)
       const destination = task.event.direction === 'upload' ? path.posix.join(task.event.destination, entry.relative) : path.join(task.event.destination, ...entry.relative.split('/'))
       if (entry.directory) {
         if (task.event.direction === 'upload') await ensureRemoteDirectory(sftp, destination)
@@ -323,8 +436,10 @@ export class TransferManager {
       }
       const child: Task = { ...task, parent: task, progressBase: completedBytes, committing: false, lastProgress: 0,
         event: { ...task.event, source: task.event.direction === 'upload' ? path.join(task.event.source, ...entry.relative.split('/')) : path.posix.join(task.event.source, entry.relative), destination, name: entry.relative, transferred: 0, total: entry.size } }
+      task.activeChild = child
       try { if (task.event.direction === 'upload') await this.runUpload(child, confirm); else await this.runDownload(child, confirm) }
       catch (error) { throw new Error(`${entry.relative}: ${errorMessage(error)}`) }
+      finally { task.activeChild = undefined }
       completedBytes += child.event.transferred
       task.event.transferred = completedBytes
       this.emit(task)
@@ -333,69 +448,110 @@ export class TransferManager {
 
   private async runUpload(task: Task, confirm: ConfirmReplacement): Promise<void> {
     const { signal } = task.controller
-    signal.throwIfAborted()
+    await this.checkpoint(task)
     const sftp = await abortable(this.getSftp(task.ownerId, task.event.sessionId), signal)
+    await this.checkpoint(task)
     const source = await abortable(lstat(task.event.source), signal)
     if (!source.isFile()) throw new Error('Only regular local files can be uploaded.')
     if (task.parent && source.size !== task.event.total) throw new Error('The source file changed size after the folder was scanned. Retry after it stops changing.')
     task.event.total = source.size
     this.emit(task)
+    await this.checkpoint(task)
     const existing = await abortable(remoteStat(sftp, task.event.destination), signal)
     if (existing?.isDirectory()) throw new Error('A directory with this name already exists on the server.')
     if (existing?.isSymbolicLink()) throw new Error('Rename the destination symbolic link before uploading.')
     if (existing && !(await confirm(task.event.destination, signal))) { task.controller.abort(); signal.throwIfAborted() }
-    signal.throwIfAborted()
+    await this.checkpoint(task)
     const temporary = path.posix.join(path.posix.dirname(task.event.destination), `.ssh-heaven-${task.event.id}.part`)
+    const mode = existing ? existing.mode & 0o777 : source.mode & 0o755
+    let owned = false, ending = false, remoteHandle: Buffer | undefined
     try {
+      // Observe exclusive OPEN itself: a failed 'wx' must never authorize
+      // unlinking a pre-existing sibling, including on cancellation/error.
+      remoteHandle = await rpc<Buffer>((callback) => sftp.open(temporary, 'wx', mode, (error, handle) => {
+        if (!error && handle) {
+          owned = true
+          if (ending) {
+            // An OPEN acknowledged after its timeout still owns its handle.
+            // The failed job will not start another child at this random path.
+            void rpc<void>((closed) => sftp.close(handle, closed), 3_000).then(() => rpc<void>((removed) => sftp.unlink(temporary, removed), 3_000)).catch(() => {})
+            return
+          }
+        }
+        callback(error, handle)
+      }))
+      try { await rpc<void>((callback) => sftp.fchmod(remoteHandle!, mode, callback)) }
+      catch { await rpc<void>((callback) => sftp.chmod(temporary, mode, callback)) }
+      await this.checkpoint(task)
+      const writer = sftp.createWriteStream(temporary, { handle: remoteHandle, flags: 'w', mode })
+      remoteHandle = undefined // The stream now owns and closes this handle.
       const reader = createReadStream(task.event.source, { highWaterMark: 64 * 1024 })
-      const writer = sftp.createWriteStream(temporary, { flags: 'wx', mode: existing ? existing.mode & 0o777 : source.mode & 0o755 })
       await this.transfer(task, reader, writer)
-      signal.throwIfAborted()
+      await this.checkpoint(task)
       if (task.event.transferred !== task.event.total) throw new Error('The source file changed size during upload. Retry after it stops changing.')
+      const unchanged = await abortable(lstat(task.event.source), signal)
+      if (!unchanged.isFile() || unchanged.dev !== source.dev || unchanged.ino !== source.ino || unchanged.size !== source.size || unchanged.mtimeMs !== source.mtimeMs) throw new Error('The source file changed during upload. The destination was preserved; retry after the source stops changing.')
       // An absent destination may have appeared during the stream. Ask again
       // before replacing it, rather than silently overwriting a new file.
       const current = await abortable(remoteStat(sftp, task.event.destination), signal)
       if (current?.isDirectory() || current?.isSymbolicLink()) throw new Error('The upload destination changed to a folder or symbolic link.')
-      if (!existing && current && !(await confirm(task.event.destination, signal))) { task.controller.abort(); signal.throwIfAborted() }
-      signal.throwIfAborted()
+      const changedDestination = current && (!existing || existing.size !== current.size || existing.mtime !== current.mtime || existing.mode !== current.mode)
+      if (changedDestination && !(await confirm(task.event.destination, signal))) { task.controller.abort(); signal.throwIfAborted() }
+      await this.checkpoint(task)
       task.committing = true
       await finalizeUpload(sftp, temporary, task.event.destination, Boolean(current))
     } finally {
-      // This only targets the random temporary sibling, never the destination.
-      await rpc<void>((callback) => sftp.unlink(temporary, callback), 3_000).catch(() => {})
+      ending = true
+      if (remoteHandle) await rpc<void>((callback) => sftp.close(remoteHandle!, callback), 3_000).catch(() => {})
+      // Only an acknowledged exclusive creation grants cleanup permission.
+      if (owned) await rpc<void>((callback) => sftp.unlink(temporary, callback), 3_000).catch(() => {})
     }
   }
 
   private async runDownload(task: Task, confirm: ConfirmReplacement): Promise<void> {
     const { signal } = task.controller
-    signal.throwIfAborted()
+    await this.checkpoint(task)
     const sftp = await abortable(this.getSftp(task.ownerId, task.event.sessionId), signal)
-    const source = await abortable(remoteStat(sftp, task.event.source, true), signal)
+    await this.checkpoint(task)
+    const source = await abortable(remoteStat(sftp, task.event.source), signal)
     if (!source?.isFile()) throw new Error('Only regular remote files can be downloaded.')
     if (task.parent && source.size !== task.event.total) throw new Error('The source file changed size after the folder was scanned. Retry after it stops changing.')
     task.event.total = source.size
     this.emit(task)
+    await this.checkpoint(task)
     const existing = await abortable(localStat(task.event.destination), signal)
     if (existing?.isSymbolicLink()) throw new Error('Rename the destination symbolic link before downloading.')
     if (existing?.isDirectory()) throw new Error('A folder with this name already exists in the download folder.')
     if (existing && !(await confirm(task.event.destination, signal))) { task.controller.abort(); signal.throwIfAborted() }
-    signal.throwIfAborted()
+    await this.checkpoint(task)
     const temporary = path.join(path.dirname(task.event.destination), `.ssh-heaven-${task.event.id}.part`)
+    let owned: { dev: number; ino: number } | undefined, handle: FileHandle | undefined
     try {
+      handle = await open(temporary, 'wx', 0o600)
+      owned = await handle.stat()
+      await this.checkpoint(task)
       const reader = sftp.createReadStream(task.event.source, { highWaterMark: 64 * 1024 })
-      const writer = createWriteStream(temporary, { flags: 'wx', mode: 0o600 })
+      const writer = handle.createWriteStream()
       await this.transfer(task, reader, writer)
-      signal.throwIfAborted()
+      await this.checkpoint(task)
       if (task.event.transferred !== task.event.total) throw new Error('The source file changed size during download. Retry after it stops changing.')
+      const unchanged = await abortable(remoteStat(sftp, task.event.source), signal)
+      if (!unchanged?.isFile() || unchanged.size !== source.size || unchanged.mtime !== source.mtime) throw new Error('The remote source changed during download. The destination was preserved; retry after the source stops changing.')
       const current = await abortable(localStat(task.event.destination), signal)
       if (current?.isSymbolicLink()) throw new Error('The download destination changed to a symbolic link.')
       if (current?.isDirectory()) throw new Error('A folder appeared at the download destination.')
-      if (!existing && current && !(await confirm(task.event.destination, signal))) { task.controller.abort(); signal.throwIfAborted() }
-      signal.throwIfAborted()
+      const changedDestination = current && (!existing || existing.dev !== current.dev || existing.ino !== current.ino || existing.size !== current.size || existing.mtimeMs !== current.mtimeMs)
+      if (changedDestination && !(await confirm(task.event.destination, signal))) { task.controller.abort(); signal.throwIfAborted() }
+      await this.checkpoint(task)
+      const partial = await abortable(localStat(temporary), signal)
+      if (!partial?.isFile() || partial.isSymbolicLink() || partial.dev !== owned.dev || partial.ino !== owned.ino || partial.size !== task.event.total) throw new Error('The temporary download file changed. The destination was preserved.')
+      await this.checkpoint(task)
       task.committing = true
       await rename(temporary, task.event.destination)
     } finally {
-      await unlink(temporary).catch(() => {})
+      await handle?.close().catch(() => {})
+      const current = owned && await localStat(temporary).catch(() => null)
+      if (current?.isFile() && !current.isSymbolicLink() && current.dev === owned!.dev && current.ino === owned!.ino) await unlink(temporary).catch(() => {})
     }
   }
 }

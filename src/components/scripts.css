@@ -59,6 +59,22 @@
 .scripts-target strong { display: block; margin-top: 4px; color: var(--text); font-size: 12px; }
 .scripts-target select { display: block; width: 100%; max-width: 330px; margin: 5px 0 0; padding: 5px 24px 5px 7px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--input); color: var(--text); font-size: 11px; }
 .scripts-target small { display: block; margin-top: 6px; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
+.scripts-target label.scripts-notification-option { display: flex; align-items: center; gap: 7px; margin-top: 9px; color: var(--text-secondary); font-size: 11px; }
+.scripts-notification-option input { width: 13px; height: 13px; margin: 0; accent-color: var(--accent); }
+.scripts-run-history { flex-shrink: 0; padding: 14px 16px; border-top: 1px solid var(--border); background: var(--surface-raised); }
+.scripts-run-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.scripts-run-history-heading h3 { margin: 0; color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.scripts-run-history-heading > span { color: var(--text-muted); font-size: 10px; }
+.scripts-run-history ol { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.script-run-result { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.script-run-result > div { min-width: 0; }
+.script-run-result strong { display: block; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.script-run-result > div > span { display: block; margin-top: 5px; color: var(--text-muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.script-run-outcome { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; flex-shrink: 0; max-width: 45%; color: var(--accent); font-size: 11px; }
+.script-run-outcome small { color: var(--text-muted); font-size: 10px; }
+.script-run-result.completed .script-run-outcome { color: var(--success); }
+.script-run-result.failed .script-run-outcome { color: var(--danger); }
+.script-run-result.disconnected .script-run-outcome { color: var(--warning); }
 .scripts-action-buttons { display: flex; gap: 8px; flex-shrink: 0; }
 .scripts-action-buttons > .button { min-height: 35px; padding: 8px 11px; font-size: 12px; }
 .scripts-action-buttons kbd { font-size: 9px; }

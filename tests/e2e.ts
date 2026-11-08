@@ -103,7 +103,7 @@ try {
   await expect(files.locator('.file-list').getByText('.hidden-test', { exact: true })).toBeVisible()
   await files.getByRole('button', { name: 'Show hidden files', exact: true }).click()
   await files.getByLabel('Filter remote files', { exact: true }).fill('welcome')
-  await expect(files.getByRole('option')).toHaveCount(1)
+  await expect(files.getByRole('listbox', { name: 'Directory contents', exact: true }).getByRole('option')).toHaveCount(1)
   await files.getByLabel('Filter remote files', { exact: true }).clear()
   await files.getByRole('button', { name: 'Sort files by size', exact: true }).click()
   await files.getByRole('button', { name: 'Sort files by size', exact: true }).click()

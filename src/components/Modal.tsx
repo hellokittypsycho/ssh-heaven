@@ -1,14 +1,16 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 
-export function Modal({ title, children, onClose, className = '' }: {
+export function Modal({ title, children, onClose, className = '', active = true }: {
   title: string
   children: ReactNode
   onClose: () => void
   className?: string
+  active?: boolean
 }) {
   const dialog = useRef<HTMLDivElement>(null)
   useEffect(() => {
+    if (!active) return
     const previous = document.activeElement as HTMLElement | null
     const isTopDialog = () => [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].at(-1) === dialog.current
     const focusDefault = () => {
@@ -34,9 +36,9 @@ export function Modal({ title, children, onClose, className = '' }: {
     document.addEventListener('keydown', handle)
     document.addEventListener('focusin', keepFocus)
     return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', handle); document.removeEventListener('focusin', keepFocus); previous?.focus() }
-  }, [onClose])
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-    <div ref={dialog} className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={title}>
+  }, [onClose, active])
+  return <div className="modal-backdrop" hidden={!active} style={!active ? { display: 'none' } : undefined} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div ref={dialog} className={`modal ${className}`} role={active ? 'dialog' : undefined} aria-modal={active ? true : undefined} aria-label={title}>
       <div className="modal-header"><h2>{title}</h2><button type="button" className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={18} /></button></div>
       {children}
     </div>

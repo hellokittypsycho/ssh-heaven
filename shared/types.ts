@@ -1,4 +1,4 @@
-export type AuthType = 'password' | 'privateKey'
+export type AuthType = 'password' | 'privateKey' | 'agent'
 
 export interface HostProfile {
   id: string
@@ -13,6 +13,9 @@ export interface HostProfile {
   jumpHostId?: string
   autoReconnect?: boolean
   tmuxSession?: string
+  color?: string
+  icon?: 'server' | 'database' | 'cloud' | 'code' | 'shield' | 'globe'
+  notes?: string
 }
 
 export type WorkspaceLayout = 'tabs' | 'split' | 'grid'
@@ -86,6 +89,8 @@ export interface CredentialStatus { available: boolean; profileIds: string[] }
 export interface VaultState { pinEnabled: boolean; unlocked: boolean; available: boolean; remainingAttempts: number; lockedUntil?: number; unlocksUntil?: number; error?: string }
 export interface VaultSnapshot { profiles: HostProfile[]; passwordProfileIds: string[]; keys: SavedKey[] }
 export interface RemoteFile { path: string; content: string; version: string; size: number; modified: number }
+export interface RemoteProperties { path: string; type: 'file' | 'directory' | 'symlink' | 'other'; size: number; mode: number; uid?: number; gid?: number; accessed: number; modified: number; version: string }
+export interface ScriptRun { id: string; sessionId: string; scriptId?: string; name: string; status: 'running' | 'completed' | 'failed' | 'disconnected'; startedAt: number; finishedAt?: number; durationMs?: number; exitCode?: number; message?: string }
 export interface WindowState { platform: string; maximized: boolean; fullscreen: boolean; focused: boolean }
 export interface WindowAppearance { appearance: 'dark' | 'light'; background: string; foreground: string; border: string }
 export interface WallpaperPreferences { enabled: boolean; opacity: number; blur: number; fit: 'cover' | 'contain'; animate: boolean }
@@ -97,7 +102,7 @@ export interface BulkImportResult { imported: number; skipped: number }
 export interface GroupCommandRequest { runId: string; group: string; profileIds: string[]; command: string; passphrase?: string; timeoutSeconds?: number }
 export type GroupCommandStatus = 'queued' | 'connecting' | 'verifying' | 'running' | 'completed' | 'failed' | 'canceled'
 export interface GroupCommandEvent { runId: string; profileId: string; host: string; username: string; name: string; status: GroupCommandStatus; output?: string; exitCode?: number | null; error?: string; startedAt?: number; finishedAt?: number; truncated?: boolean }
-export type TransferStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
+export type TransferStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled'
 export interface TransferJob {
   id: string
   sessionId: string
@@ -111,6 +116,10 @@ export interface TransferJob {
   message?: string
   startedAt: number
   finishedAt?: number
+  bytesPerSecond?: number
+  etaSeconds?: number
+  queuePosition?: number
+  bandwidthLimit?: number
 }
 
 export interface SshHeavenApi {
@@ -156,13 +165,22 @@ export interface SshHeavenApi {
   connect(request: ConnectRequest): Promise<SessionInfo>
   disconnect(sessionId: string): Promise<void>
   write(sessionId: string, data: string): void
-  runTerminalScript(sessionId: string, command: string): Promise<void>
+  runTerminalScript(sessionId: string, command: string, details?: { scriptId?: string; name?: string }): Promise<ScriptRun>
+  listScriptRuns(): Promise<ScriptRun[]>
+  onScriptRun(callback: (run: ScriptRun) => void): () => void
+  notifyScriptRun(id: string): Promise<void>
+  exportTerminalLog(text: string): Promise<boolean>
   resize(sessionId: string, cols: number, rows: number): void
   listDirectory(sessionId: string, path: string): Promise<DirectoryListing>
   upload(sessionId: string, remoteDirectory: string): Promise<TransferResult>
   download(sessionId: string, remotePath: string): Promise<TransferResult>
   downloadFiles(sessionId: string, remotePaths: string[]): Promise<TransferResult>
   cancelTransfer(transferId: string): Promise<void>
+  pauseTransfer(transferId: string): Promise<void>
+  resumeTransfer(transferId: string): Promise<void>
+  moveTransfer(transferId: string, direction: -1 | 1): Promise<void>
+  getTransferBandwidthLimit(): Promise<number>
+  setTransferBandwidthLimit(bytesPerSecond: number): Promise<void>
   uploadFolder(sessionId: string, remoteDirectory: string): Promise<TransferResult>
   uploadDropped(sessionId: string, remoteDirectory: string, files: File[]): Promise<TransferResult>
   retryTransfer(transferId: string): Promise<TransferResult>
@@ -189,6 +207,8 @@ export interface SshHeavenApi {
   resolveMcpApproval(id: string, approved: boolean): Promise<void>
   onMcpState(callback: (event: McpState) => void): () => void
   readRemoteFile(sessionId: string, path: string): Promise<RemoteFile>
+  getRemoteProperties(sessionId: string, path: string): Promise<RemoteProperties>
+  chmodRemote(sessionId: string, path: string, mode: number, expectedVersion?: string): Promise<RemoteProperties>
   saveRemoteFile(sessionId: string, path: string, content: string, expectedVersion: string): Promise<RemoteFile>
   mkdir(sessionId: string, path: string): Promise<void>
   rename(sessionId: string, oldPath: string, newPath: string): Promise<void>
