@@ -24,6 +24,12 @@ export class ScriptCompletionParser {
     if (!/^[a-f0-9]{48}$/.test(nonce)) throw new Error('Invalid script completion nonce.')
     this.prefix = Buffer.from(`${START}${nonce};`)
   }
+  /** Preserve any ordinary suffix before the completed parser is detached. */
+  flush(): Buffer {
+    const pending = this.pending
+    this.pending = Buffer.alloc(0)
+    return pending
+  }
   consume(chunk: Buffer): { data: Buffer; exitCode?: number } {
     const input = this.pending.length ? Buffer.concat([this.pending, chunk]) : chunk
     this.pending = Buffer.alloc(0)

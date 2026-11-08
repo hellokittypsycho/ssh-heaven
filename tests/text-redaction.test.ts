@@ -17,6 +17,17 @@ test('rule punctuation is literal and case-sensitive matches do not hide unrelat
 test('rule bounds reject blank/control-character/unbounded rules', () => {
   for (const value of [null, Array.from({ length: 51 }, () => ({ text: 'x', caseSensitive: false })), [{ text: ' ', caseSensitive: false }], [{ text: 'x\n', caseSensitive: false }], [{ text: 'x'.repeat(257), caseSensitive: false }], [{ text: 'x', caseSensitive: 'yes' }]]) assert.throws(() => validateStreamRules(value))
 })
+
+test('immutable validated snapshots stay cached while direct mutable callers cannot reuse stale rules', () => {
+  const snapshot = validateStreamRules([{ text: 'first', caseSensitive: true }])
+  assert.equal(Object.isFrozen(snapshot), true); assert.equal(Object.isFrozen(snapshot[0]), true)
+  const mutable = [{ text: 'first', caseSensitive: true }]
+  assert.equal(redactPrivateText('first second', mutable), '••••• second')
+  mutable[0].text = 'second'
+  assert.equal(redactPrivateText('first second', mutable), 'first ••••••')
+  mutable.push({ text: 'first', caseSensitive: true })
+  assert.equal(redactPrivateText('first second', mutable), '••••• ••••••')
+})
 test('dense duplicate and overlapping rules keep a two-MiB document bounded', () => {
   const rules = validateStreamRules(Array.from({ length: 50 }, () => ({ text: 'a', caseSensitive: false })))
   const value = 'a'.repeat(2 * 1024 * 1024)

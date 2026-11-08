@@ -29,6 +29,7 @@ interface Task {
   activeSince?: number
   activeMilliseconds: number
   samples: { time: number; bytes: number }[]
+  failure?: Error
 }
 
 function rpc<T>(invoke: (callback: (error: Error | null | undefined, result: T) => void) => void, timeout = 15_000): Promise<T> {
@@ -132,6 +133,11 @@ export class TransferManager {
   private readonly queues = new Map<string, Task[]>()
   private readonly draining = new Set<string>()
   private readonly bandwidth = new Map<number, TransferBandwidth>()
+  private readonly ownerCapabilities = new Map<number, object>()
+  private readonly sessionCapabilities = new Map<string, object>()
+  private readonly closingOwners = new Map<number, number>()
+  private readonly closingSessions = new Map<string, number>()
+  private disposed = false
 
   constructor(
     private readonly getSftp: (ownerId: number, sessionId: string) => Promise<SFTPWrapper>,
@@ -140,6 +146,7 @@ export class TransferManager {
 
   async upload(ownerId: number, sessionValue: unknown, sourceValues: unknown, directoryValue: unknown, confirm: ConfirmReplacement): Promise<TransferResult> {
     const sessionId = identifier(sessionValue, 'session identifier')
+    this.admit(ownerId, sessionId)
     const directory = remotePath(directoryValue)
     const sources = validateBatch(sourceValues, 'files')
     if (sources.some((source) => !path.isAbsolute(source))) throw new Error('Upload sources must be selected local files.')
@@ -154,6 +161,7 @@ export class TransferManager {
 
   async download(ownerId: number, sessionValue: unknown, sourceValues: unknown, localDirectory: string, confirm: ConfirmReplacement): Promise<TransferResult> {
     const sessionId = identifier(sessionValue, 'session identifier')
+    this.admit(ownerId, sessionId)
     const sources = validateBatch(sourceValues, 'files')
     if (!path.isAbsolute(localDirectory)) throw new Error('Choose a local download folder.')
     // Validate the complete batch before enqueuing, including Windows reserved
@@ -169,8 +177,9 @@ export class TransferManager {
     const id = identifier(value, 'transfer identifier')
     const previous = this.jobs.get(id)
     if (!previous || previous.ownerId !== ownerId || !['failed', 'canceled'].includes(previous.event.status)) throw new Error('Only failed or canceled transfers from this window can be retried.')
-    this.ensureCapacity(1)
     const { sessionId, direction, source, destination, name } = previous.event
+    this.admit(ownerId, sessionId)
+    this.ensureCapacity(1)
     return this.batch([this.enqueue(ownerId, sessionId, direction, source, destination, name, (task) => this.runTree(task, confirm))])
   }
 
@@ -232,6 +241,30 @@ export class TransferManager {
   }
   private pending(task: Task): boolean { return ['queued', 'running', 'paused'].includes(task.event.status) }
   private key(task: Task): string { return `${task.ownerId}:${task.event.sessionId}` }
+  private admit(ownerId: number, sessionId: string): void {
+    if (!Number.isSafeInteger(ownerId) || ownerId < 1) throw new Error('Invalid transfer window.')
+    if (this.disposed) throw new Error('The transfer manager is shutting down.')
+    if (this.closingOwners.has(ownerId) || this.closingSessions.has(`${ownerId}:${sessionId}`)) throw new Error('Previous transfers are still closing. Wait for cleanup before starting another transfer.')
+  }
+
+  /** Capture before a file picker/await. Old operations cannot revive when a
+   * renderer reload or reconnect reuses the same owner/session identifiers. */
+  capture(ownerId: number, sessionValue: unknown): () => void {
+    const sessionId = identifier(sessionValue, 'session identifier'), key = `${ownerId}:${sessionId}`
+    this.admit(ownerId, sessionId)
+    let owner = this.ownerCapabilities.get(ownerId), session = this.sessionCapabilities.get(key)
+    if (!owner) { owner = {}; this.ownerCapabilities.set(ownerId, owner) }
+    if (!session) {
+      // Valid UI use has at most 20 live sessions. Bound failed/abandoned
+      // captures too; evicted pickers must be selected again rather than revive.
+      if (this.sessionCapabilities.size >= 512) this.sessionCapabilities.delete(this.sessionCapabilities.keys().next().value!)
+      session = {}; this.sessionCapabilities.set(key, session)
+    }
+    return () => {
+      this.admit(ownerId, sessionId)
+      if (this.ownerCapabilities.get(ownerId) !== owner || this.sessionCapabilities.get(key) !== session) throw new Error('The connection or window changed. Select the files again before starting a transfer.')
+    }
+  }
   private ownerBandwidth(ownerId: number): TransferBandwidth {
     if (!Number.isSafeInteger(ownerId) || ownerId < 1) throw new Error('Invalid transfer window.')
     let bandwidth = this.bandwidth.get(ownerId)
@@ -250,15 +283,31 @@ export class TransferManager {
 
   async cancelSession(ownerId: number, sessionValue: unknown): Promise<void> {
     const sessionId = identifier(sessionValue, 'session identifier')
-    await this.cancelMatching((task) => task.ownerId === ownerId && task.event.sessionId === sessionId)
+    const key = `${ownerId}:${sessionId}`
+    this.sessionCapabilities.delete(key)
+    this.closingSessions.set(key, (this.closingSessions.get(key) ?? 0) + 1)
+    try { await this.cancelMatching((task) => task.ownerId === ownerId && task.event.sessionId === sessionId) }
+    finally {
+      const remaining = this.closingSessions.get(key)! - 1
+      if (remaining) this.closingSessions.set(key, remaining); else this.closingSessions.delete(key)
+    }
   }
 
   async cancelOwner(ownerId: number): Promise<void> {
-    await this.cancelMatching((task) => task.ownerId === ownerId)
-    this.bandwidth.delete(ownerId)
+    this.ownerCapabilities.delete(ownerId)
+    for (const key of this.sessionCapabilities.keys()) if (key.startsWith(`${ownerId}:`)) this.sessionCapabilities.delete(key)
+    this.closingOwners.set(ownerId, (this.closingOwners.get(ownerId) ?? 0) + 1)
+    try { await this.cancelMatching((task) => task.ownerId === ownerId) }
+    finally {
+      this.bandwidth.delete(ownerId)
+      const remaining = this.closingOwners.get(ownerId)! - 1
+      if (remaining) this.closingOwners.set(ownerId, remaining); else this.closingOwners.delete(ownerId)
+    }
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true
+    this.ownerCapabilities.clear(); this.sessionCapabilities.clear()
     await this.cancelMatching(() => true)
     this.bandwidth.clear()
   }
@@ -324,7 +373,7 @@ export class TransferManager {
           await task.action(task)
           this.finish(task, 'completed')
         } catch (error) {
-          this.finish(task, task.controller.signal.aborted ? 'canceled' : 'failed', task.controller.signal.aborted ? 'Transfer canceled.' : transferError(error))
+          this.finish(task, task.failure || !task.controller.signal.aborted ? 'failed' : 'canceled', task.failure ? transferError(task.failure) : task.controller.signal.aborted ? 'Transfer canceled.' : transferError(error))
         }
       }
     } finally {
@@ -398,9 +447,21 @@ export class TransferManager {
 
   private async checkpoint(task: Task): Promise<void> { await task.gate.wait(task.controller.signal) }
 
+  private fail(task: Task, error: unknown): void {
+    const root = task.parent ?? task
+    if (root.controller.signal.aborted) return
+    root.failure = error instanceof Error ? error : new Error(errorMessage(error))
+    // A failed pipeline can otherwise leave its asynchronous transform waiting
+    // forever on a paused gate, retaining a chunk and a limiter subscription.
+    root.controller.abort(root.failure)
+  }
+
   private async transfer(task: Task, reader: Readable, writer: Writable): Promise<void> {
     try {
       await pipeline(reader, this.progress(task), writer, { signal: task.controller.signal })
+    } catch (error) {
+      this.fail(task, error)
+      throw error
     } finally {
       // pipeline can reject before a remote OPEN/CLOSE callback has settled.
       // Always await both file handles separately, even on abort, so temporary
@@ -416,6 +477,16 @@ export class TransferManager {
     const signal = task.controller.signal
     await this.checkpoint(task)
     const sftp = await abortable(this.getSftp(task.ownerId, task.event.sessionId), signal)
+    const closed = () => this.fail(task, new Error('The SFTP channel closed during this transfer. Retry to open a new file channel.'))
+    sftp.once('end', closed)
+    sftp.once('close', closed)
+    sftp.once('error', closed)
+    try { await this.runTreeWithChannel(task, sftp, confirm) }
+    finally { sftp.off('end', closed); sftp.off('close', closed); sftp.off('error', closed) }
+  }
+
+  private async runTreeWithChannel(task: Task, sftp: SFTPWrapper, confirm: ConfirmReplacement): Promise<void> {
+    const signal = task.controller.signal
     await this.checkpoint(task)
     const source = task.event.direction === 'upload' ? await lstat(task.event.source) : await remoteStat(sftp, task.event.source)
     if (source?.isSymbolicLink()) throw new Error('Transfers do not follow symbolic links. Select the target directly instead.')

@@ -32,6 +32,7 @@ interface Session {
   client: SshClient
   shell?: ClientChannel
   sftp?: Promise<SFTPWrapper>
+  cancelSftpOpening?: () => void
   connected: boolean
   closed: boolean
   failed: boolean
@@ -137,6 +138,7 @@ export class SshService {
     const finishedAt = Date.now()
     item.run = { ...item.run, status, finishedAt, durationMs: Math.max(0, finishedAt - item.run.startedAt), ...(exitCode === undefined ? {} : { exitCode }), ...(message ? { message } : {}) }
     session.activeScript = undefined
+    session.scriptParser = undefined
     this.events.scriptRun?.(item.ownerId, { ...item.run })
   }
 
@@ -545,8 +547,11 @@ export class SshService {
     session.beforeInput = session.flushOutput
     return (data) => {
       if (session.closed || !data.byteLength) return
-      const parsed = session.scriptParser?.consume(data)
-      const owned = new Uint8Array(parsed?.data ?? data)
+      const parser = session.scriptParser
+      const parsed = parser?.consume(data)
+      const tail = parsed?.exitCode === undefined ? undefined : parser?.flush()
+      const visible = tail?.length ? Buffer.concat([parsed!.data, tail]) : parsed?.data ?? data
+      const owned = new Uint8Array(visible)
       if (owned.byteLength) {
       if (!tick) {
         // Deliver the first chunk immediately: a keystroke's server echo
@@ -606,6 +611,9 @@ export class SshService {
     session.flushOutput?.()
     session.flushOutput = undefined
     session.beforeInput = undefined
+    session.cancelSftpOpening?.()
+    session.cancelSftpOpening = undefined
+    session.sftp = undefined
     session.scriptParser = undefined
     this.finishScript(session, 'disconnected', undefined, 'The SSH terminal disconnected before a script result was received.')
     this.sessions.delete(session.id)
@@ -629,11 +637,41 @@ export class SshService {
   async getSftp(ownerId: number, sessionId: unknown): Promise<SFTPWrapper> {
     const session = this.getSession(ownerId, sessionId)
     if (!session.connected) throw new Error('Wait for the SSH connection to finish.')
-    if (!session.sftp) session.sftp = new Promise<SFTPWrapper>((resolve, reject) => {
-      session.client.sftp((error, sftp) => {
-        if (error) { session.sftp = undefined; reject(error) } else resolve(sftp)
-      })
-    })
+    if (!session.sftp) {
+      let resolve!: (sftp: SFTPWrapper) => void, reject!: (error: Error) => void
+      const opening = new Promise<SFTPWrapper>((yes, no) => { resolve = yes; reject = no })
+      // Assign before invoking ssh2: synchronous failures must not leave a
+      // permanently rejected promise installed over the cleared cache.
+      session.sftp = opening
+      let settled = false
+      const invalidate = () => { if (session.sftp === opening) session.sftp = undefined }
+      const finish = (error?: Error | null, sftp?: SFTPWrapper) => {
+        if (settled) {
+          if (sftp) { sftp.on('error', () => {}); try { sftp.end() } catch { /* The old transport may already be gone. */ } }
+          return
+        }
+        settled = true
+        clearTimeout(timer)
+        if (session.cancelSftpOpening === cancel) session.cancelSftpOpening = undefined
+        if (session.closed || this.sessions.get(session.id) !== session) error = new Error('The SSH session disconnected while opening SFTP.')
+        if (error || !sftp) {
+          invalidate()
+          if (sftp) { sftp.on('error', () => {}); try { sftp.end() } catch { /* Closed transport. */ } }
+          reject(error ?? new Error('The SFTP channel could not be opened.'))
+          return
+        }
+        sftp.once('end', invalidate)
+        sftp.once('close', invalidate)
+        sftp.on('error', () => { invalidate(); try { sftp.end() } catch { /* Closed transport. */ } })
+        resolve(sftp)
+      }
+      const cancel = () => finish(new Error('The SSH session disconnected while opening SFTP.'))
+      const timer = setTimeout(() => finish(new Error('The server did not open an SFTP channel in time. Try again.')), 15_000)
+      session.cancelSftpOpening = cancel
+      try { session.client.sftp((error, sftp) => finish(error, sftp)) }
+      catch (error) { finish(error instanceof Error ? error : new Error('The SFTP channel could not be opened.')) }
+      return opening
+    }
     return session.sftp
   }
 

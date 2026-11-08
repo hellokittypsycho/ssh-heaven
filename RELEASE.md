@@ -39,10 +39,11 @@ npm run test:release-suggestion
 
 This separate check starts the real 0.8.1 app with isolated temporary settings and a hidden offscreen window. Its startup request reads the live GitHub response and must offer the version in the current repository's `package.json`. The test records the browser-open request after a click; it does not open the user's browser, download an installer, or install anything. Keep it separate from `test:packaged`, which runs before publishing and uses controlled update responses.
 
-For the live in-app download check, preserve the packaged **0.10.0** runtime before building, then run the separate test after publishing:
+For the live in-app download check, preserve the previous packaged runtime before building, then run the separate test after publishing. For the 0.11.1 release, use the published **0.11.0** runtime:
 
 ```powershell
-$env:SSH_HEAVEN_BASELINE_EXECUTABLE = 'C:\QA\ssh-heaven-0.10.0\SSH Heaven.exe'
+$env:SSH_HEAVEN_BASELINE_VERSION = '0.11.0'
+$env:SSH_HEAVEN_BASELINE_EXECUTABLE = 'C:\QA\ssh-heaven-0.11.0\SSH Heaven.exe'
 npm run test:release-download
 ```
 

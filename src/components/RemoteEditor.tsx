@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import CodeMirror, { type BasicSetupOptions, type ReactCodeMirrorRef, type Statistics } from '@uiw/react-codemirror'
-import { EditorState, Prec, type Extension } from '@codemirror/state'
-import { EditorView, keymap } from '@codemirror/view'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import CodeMirror, { ExternalChange, type BasicSetupOptions, type ReactCodeMirrorRef, type Statistics } from '@uiw/react-codemirror'
+import { EditorState, Prec, type Extension, type Text } from '@codemirror/state'
+import { EditorView, keymap, type ViewUpdate } from '@codemirror/view'
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
 import { closeSearchPanel, openSearchPanel, search, searchKeymap, searchPanelOpen } from '@codemirror/search'
 import { javascript } from '@codemirror/lang-javascript'
@@ -25,6 +25,7 @@ import { useTheme } from '../theme'
 import { useStreamMode } from '../stream-mode'
 import { streamPrivacyExtension } from '../privacy-editor'
 import { buildDiffPreview } from '../editor-diff'
+import { stringBytes, updateDocumentBytes, type TextFormat } from '../editor-text'
 import { Modal, errorMessage } from './Modal'
 import './remote-editor.css'
 
@@ -50,7 +51,6 @@ const LANGUAGES = [
   { id: 'nginx', name: 'Nginx', extension: () => StreamLanguage.define(nginx) },
 ] as const
 type Language = typeof LANGUAGES[number]['id']
-interface TextFormat { bom: boolean; ending: '\n' | '\r\n' | '\r'; mixed: boolean }
 
 function detectLanguage(filename: string): Language {
   const name = filename.split('/').at(-1)?.toLowerCase() ?? ''
@@ -99,7 +99,7 @@ export function RemoteEditor({ sessionId, path, api, onClose, requestId = 0, onS
   api: SshHeavenApi
   onClose: () => void
   requestId?: number
-  onSaved?: () => void
+  onSaved?: (sessionId: string) => void
   visible?: boolean
   onHide?: () => void
   onTabCountChange?: (count: number) => void
@@ -137,7 +137,15 @@ export function RemoteEditor({ sessionId, path, api, onClose, requestId = 0, onS
     if (tab.left < bounds.left) strip.scrollLeft -= bounds.left - tab.left
     else if (tab.right > bounds.right) strip.scrollLeft += tab.right - bounds.right
   }, [activeId, tabs.length, visible])
-  const updateMeta = useCallback((id: string, next: DocumentMeta) => setMeta((current) => current[id]?.dirty === next.dirty && current[id]?.saving === next.saving ? current : { ...current, [id]: next }), [])
+  const updateMeta = useCallback((id: string, next: DocumentMeta) => {
+    const current = metaRef.current
+    if (current[id]?.dirty === next.dirty && current[id]?.saving === next.saving) return
+    // Close requests may arrive in the same event as a document transaction.
+    // Keep their guard authoritative before React paints the dirty indicator.
+    metaRef.current = { ...current, [id]: next }
+    setMeta(metaRef.current)
+  }, [])
+  const notifySaved = useCallback((id: string) => callbacks.current.onSaved?.(id), [])
   const registerClose = useCallback((id: string, callback: (() => void) | null) => { if (callback) closeRequests.current.set(id, callback); else closeRequests.current.delete(id) }, [])
   const requestTabClose = useCallback((id: string) => {
     // A document owns its confirmation. Bring an inactive dirty tab forward
@@ -186,7 +194,7 @@ export function RemoteEditor({ sessionId, path, api, onClose, requestId = 0, onS
         event.preventDefault(); setActiveId(tabs[next].id); tabButtons.current.get(tabs[next].id)?.focus({ preventScroll: true })
       }}><FileCode2 size={13} /><span>{fileName(tab.path)}<small>{tab.label}</small></span>{meta[tab.id]?.dirty && <i className="remote-editor-dirty-dot" aria-hidden="true" />}</button><button className="icon-button" aria-label={`Close ${fileName(tab.path)} on ${tab.label}`} disabled={meta[tab.id]?.saving} onClick={() => requestTabClose(tab.id)}><X size={13} /></button></div>)}</div>
       {error && <div className="remote-editor-message" role="alert">{error}</div>}
-      {tabs.map((tab, index) => <EditorDocument key={tab.id} tabId={tab.id} index={index} active={visible && activeId === tab.id} sessionId={tab.sessionId} path={tab.path} api={api} onClose={() => removeTab(tab.id)} onSaved={() => callbacks.current.onSaved?.()} onMetaChange={updateMeta} registerClose={registerClose} />)}
+      {tabs.map((tab, index) => <EditorDocument key={tab.id} tabId={tab.id} index={index} active={visible && activeId === tab.id} sessionId={tab.sessionId} path={tab.path} api={api} onClose={removeTab} onSaved={notifySaved} onMetaChange={updateMeta} registerClose={registerClose} />)}
     </Modal>
     {visible && closingAll && <Modal title="Discard unsaved changes?" onClose={cancelCloseAll} className="small-modal"><p className="modal-description">{Object.values(meta).filter((value) => value.dirty).length} {Object.values(meta).filter((value) => value.dirty).length === 1 ? 'file has' : 'files have'} unsaved changes. Closing the editor discards those drafts.</p><div className="modal-actions"><button className="button secondary" onClick={cancelCloseAll}>Keep editing</button><button className="button danger-button" onClick={() => callbacks.current.onClose()}>Discard and close</button></div></Modal>}
     {visible && openPath !== null && <Modal title="Open remote file" onClose={closePathForm} className="small-modal"><form onSubmit={(event) => {
@@ -200,15 +208,15 @@ export function RemoteEditor({ sessionId, path, api, onClose, requestId = 0, onS
   </>
 }
 
-function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, onSaved, onMetaChange, registerClose }: {
+const EditorDocument = memo(function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, onSaved, onMetaChange, registerClose }: {
   sessionId: string
   path: string
   api: SshHeavenApi
-  onClose: () => void
+  onClose: (id: string) => void
   tabId: string
   index: number
   active: boolean
-  onSaved: () => void
+  onSaved: (sessionId: string) => void
   onMetaChange: (id: string, meta: DocumentMeta) => void
   registerClose: (id: string, callback: (() => void) | null) => void
 }) {
@@ -218,8 +226,9 @@ function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, o
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
   const [file, setFile] = useState<RemoteFile | null>(null)
-  const [draft, setDraft] = useState('')
   const [baseline, setBaseline] = useState('')
+  const baselineTree = useRef<Text | null>(null)
+  const [dirty, setDirty] = useState(false)
   const [format, setFormat] = useState<TextFormat>({ bom: false, ending: '\n', mixed: false })
   const [language, setLanguage] = useState<Language>(() => detectLanguage(path))
   const [loading, setLoading] = useState(true)
@@ -228,24 +237,47 @@ function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, o
   const [conflict, setConflict] = useState(false)
   const [saved, setSaved] = useState(false)
   const [guard, setGuard] = useState<'close' | 'reload' | null>(null)
-  const [review, setReview] = useState<{ content: string; version: string; draft: string; baseline: string } | null>(null)
+  const [review, setReview] = useState<{ content: string; version: string; draft: string; baseline: string; document: Text } | null>(null)
   const [cursor, setCursor] = useState({ line: 1, column: 1, lines: 1 })
   const operation = useRef<'read' | 'write' | null>(null)
   const generation = useRef(0)
-  const dirty = draft !== baseline
   const current = useRef({ dirty, guard })
   current.current = { dirty, guard }
-  const serialized = useMemo(() => encodeForServer(draft, format), [draft, format])
-  const byteCount = useMemo(() => new TextEncoder().encode(serialized).byteLength, [serialized])
+  const formatRef = useRef(format)
+  const [byteCount, setByteCount] = useState(0)
+  const byteCountRef = useRef(0)
   const tooLarge = byteCount > MAX_FILE_BYTES
   const saveRef = useRef<() => Promise<void>>(async () => {})
   const activeRef = useRef(active); activeRef.current = active
   useEffect(() => onMetaChange(tabId, { dirty, saving }), [tabId, dirty, saving, onMetaChange])
-  const handleChange = useCallback((value: string) => { setDraft(value); setSaved(false) }, [])
+  const handleUpdate = useCallback((update: ViewUpdate) => {
+    if (!update.docChanged || update.transactions.some((transaction) => transaction.annotation(ExternalChange))) return
+    if (!baselineTree.current) baselineTree.current = update.startState.doc
+    const nextDirty = !baselineTree.current.eq(update.state.doc)
+    const bytes = updateDocumentBytes(byteCountRef.current, update.startState.doc, update.state.doc, update.changes, formatRef.current)
+    byteCountRef.current = bytes; current.current.dirty = nextDirty
+    setByteCount(bytes); setDirty(nextDirty); setSaved(false)
+    onMetaChange(tabId, { dirty: nextDirty, saving: operation.current === 'write' })
+  }, [onMetaChange, tabId])
+  const captureEditor = useCallback((view: EditorView) => { baselineTree.current = view.state.doc }, [])
   const handleStatistics = useCallback((statistics: Statistics) => {
     const next = { line: statistics.line.number, column: statistics.selection.main.head - statistics.line.from + 1, lines: statistics.lineCount }
     setCursor((previous) => previous.line === next.line && previous.column === next.column && previous.lines === next.lines ? previous : next)
   }, [])
+  const applyFile = useCallback((result: RemoteFile) => {
+    const decoded = decodeForEditor(result.content)
+    formatRef.current = decoded.format
+    const view = editor.current?.view
+    if (view && (view.state.doc.length !== decoded.draft.length || view.state.doc.toString() !== decoded.draft)) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: decoded.draft }, annotations: [ExternalChange.of(true)] })
+    }
+    baselineTree.current = view?.state.doc ?? null
+    const bytes = stringBytes(decoded.draft, decoded.format)
+    byteCountRef.current = bytes; current.current.dirty = false
+    setFile(result); setBaseline(decoded.draft); setFormat(decoded.format)
+    setByteCount(bytes); setDirty(false)
+    onMetaChange(tabId, { dirty: false, saving: operation.current === 'write' })
+  }, [onMetaChange, tabId])
 
   const load = useCallback(async () => {
     if (operation.current) return
@@ -256,11 +288,7 @@ function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, o
     try {
       const result = await api.readRemoteFile(sessionId, path)
       if (request !== generation.current) return
-      const decoded = decodeForEditor(result.content)
-      setFile(result)
-      setDraft(decoded.draft)
-      setBaseline(decoded.draft)
-      setFormat(decoded.format)
+      applyFile(result)
       setConflict(false)
       setSaved(false)
     } catch (cause) {
@@ -268,7 +296,7 @@ function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, o
     } finally {
       if (request === generation.current) { operation.current = null; setLoading(false) }
     }
-  }, [api, sessionId, path])
+  }, [api, sessionId, path, applyFile])
 
   useEffect(() => {
     setLanguage(detectLanguage(path))
@@ -278,6 +306,7 @@ function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, o
 
   async function save(reviewed: NonNullable<typeof review>) {
     if (!file || operation.current || !dirty || tooLarge || conflict || guard) return
+    if (!editor.current?.view?.state.doc.eq(reviewed.document)) { setReview(null); setError('The draft changed after review. Review the latest changes before saving.'); return }
     operation.current = 'write'
     const request = generation.current
     setSaving(true)
@@ -285,15 +314,11 @@ function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, o
     try {
       const result = await api.saveRemoteFile(sessionId, file.path, reviewed.content, reviewed.version)
       if (request !== generation.current) return
-      const decoded = decodeForEditor(result.content)
-      setFile(result)
-      setDraft(decoded.draft)
-      setBaseline(decoded.draft)
-      setFormat(decoded.format)
+      applyFile(result)
       setSaved(true)
       setConflict(false)
       setReview(null)
-      onSaved()
+      onSaved(sessionId)
     } catch (cause) {
       if (request !== generation.current) return
       const message = errorMessage(cause)
@@ -304,14 +329,19 @@ function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, o
       if (request === generation.current) { operation.current = null; setSaving(false) }
     }
   }
-  const requestSave = async () => { if (file && !operation.current && dirty && !tooLarge && !conflict && !guard) setReview({ content: serialized, version: file.version, draft, baseline }) }
+  const requestSave = async () => {
+    const document = editor.current?.view?.state.doc
+    if (!file || !document || operation.current || !current.current.dirty || byteCountRef.current > MAX_FILE_BYTES || conflict || current.current.guard) return
+    const draft = document.toString()
+    setReview({ content: encodeForServer(draft, formatRef.current), version: file.version, draft, baseline, document })
+  }
   saveRef.current = requestSave
 
   const requestClose = useCallback(() => {
     if (operation.current === 'write') return
     if (current.current.dirty) setGuard('close')
-    else onCloseRef.current()
-  }, [])
+    else onCloseRef.current(tabId)
+  }, [tabId])
   const cancelGuard = useCallback(() => setGuard(null), [])
   const closeReview = useCallback(() => { if (operation.current !== 'write') setReview(null) }, [])
   useEffect(() => { registerClose(tabId, requestClose); return () => registerClose(tabId, null) }, [tabId, registerClose, requestClose])
@@ -402,14 +432,14 @@ function EditorDocument({ sessionId, path, api, onClose, tabId, index, active, o
       }}>
         {loading && !file ? <div className="remote-editor-empty" role="status"><LoaderCircle className="spin" size={26} /><span>Opening remote file…</span></div>
           : !file ? <div className="remote-editor-empty"><FileCode2 size={30} /><strong>This file could not be opened.</strong><span>Choose a UTF-8 text file up to 2 MiB.</span><button className="button secondary" aria-label="Retry opening remote file" onClick={() => void load()}>Try again</button></div>
-            : <CodeMirror ref={editor} className="remote-editor-code" height="100%" value={draft} theme="none" extensions={extensions} readOnly={saving || loading} basicSetup={EDITOR_SETUP} onChange={handleChange} onStatistics={handleStatistics} />}
+            : <CodeMirror ref={editor} className="remote-editor-code" height="100%" value={baseline} theme="none" extensions={extensions} readOnly={saving || loading} basicSetup={EDITOR_SETUP} onCreateEditor={captureEditor} onUpdate={handleUpdate} onStatistics={handleStatistics} />}
       </div>
       <footer className="remote-editor-footer"><span className={dirty ? 'remote-editor-unsaved' : ''} role="status">{loading ? 'Loading…' : status}</span><span className="remote-editor-position">Ln {cursor.line}, Col {cursor.column}</span><span>{formatSize(byteCount)}</span><span>{format.bom ? 'UTF-8 BOM' : 'UTF-8'}</span><span title={format.mixed ? 'Saving will normalize mixed line endings to LF.' : 'Original line endings are preserved when saving.'}>{lineEndingLabel}</span></footer>
     </section>
     {active && review && <SaveReview path={path} before={review.baseline} after={review.draft} busy={saving} onClose={closeReview} onSave={() => void save(review)} />}
-    {active && guard && <Modal title="Discard unsaved changes?" onClose={cancelGuard} className="small-modal"><p className="modal-description">{guard === 'reload' ? 'Reloading replaces your draft with the latest version from the server.' : 'Your changes have not been saved to the server.'}</p><div className="modal-actions"><button className="button secondary" onClick={cancelGuard}>Keep editing</button><button className="button danger-button" onClick={() => { const action = guard; setGuard(null); if (action === 'reload') void load(); else onCloseRef.current() }}>{guard === 'reload' ? 'Discard and reload' : 'Discard and close'}</button></div></Modal>}
+    {active && guard && <Modal title="Discard unsaved changes?" onClose={cancelGuard} className="small-modal"><p className="modal-description">{guard === 'reload' ? 'Reloading replaces your draft with the latest version from the server.' : 'Your changes have not been saved to the server.'}</p><div className="modal-actions"><button className="button secondary" onClick={cancelGuard}>Keep editing</button><button className="button danger-button" onClick={() => { const action = guard; setGuard(null); if (action === 'reload') void load(); else onCloseRef.current(tabId) }}>{guard === 'reload' ? 'Discard and reload' : 'Discard and close'}</button></div></Modal>}
   </>
-}
+})
 
 function SaveReview({ path, before, after, busy, onClose, onSave }: { path: string; before: string; after: string; busy: boolean; onClose: () => void; onSave: () => void }) {
   const streamMode = useStreamMode()

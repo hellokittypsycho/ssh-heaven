@@ -2,7 +2,7 @@ import type { IBufferCell, IMarker, Terminal } from '@xterm/xterm'
 import { redactSensitiveText as redactIPs } from './stream-rules'
 
 interface Row { text: string; masked: string; wrapped: boolean; ansi: string }
-interface Snapshot { rows: Row[]; cols: number; height: number; base: number; type: string; cursorX: number; cursorY: number }
+interface Snapshot { rows: Row[]; count: number; changed: Set<number>; historyChanged: boolean; wrappingChanged: boolean; cols: number; height: number; base: number; type: string; cursorX: number; cursorY: number }
 
 function cellStyle(cell: IBufferCell): string {
   if (cell.isAttributeDefault()) return '\x1b[0m'
@@ -41,13 +41,24 @@ export class TerminalPrivacyRenderer {
   private disposed = false
   private first = true
   private rulesRevision = 0
+  private shown = true
   constructor(private readonly raw: Terminal, private readonly visible: Terminal, private readonly host: HTMLElement, private readonly rendered: () => void, private readonly extraModes: ReadonlyMap<number, boolean> = new Map()) {}
 
   schedule(force = false): void {
     this.dirty = true; this.force ||= force
-    if (!this.writing && !this.frame && !this.disposed) this.frame = requestAnimationFrame(() => { this.frame = 0; this.paint() })
+    if (this.shown && !this.writing && !this.frame && !this.disposed) this.frame = requestAnimationFrame(() => { this.frame = 0; this.paint() })
   }
-  refreshRules(): void { this.rulesRevision++; this.previous = undefined; this.host.dataset.streamReady = 'false'; this.schedule(true) }
+  /** Raw parsing continues outside this renderer. A hidden pane needs no
+   * snapshots or mirror writes; its opaque curtain stays closed until catchup. */
+  setVisible(shown: boolean): void {
+    if (this.disposed || this.shown === shown) return
+    this.shown = shown; this.rulesRevision++; this.dirty = true; this.force = true
+    this.visible.clearSelection?.()
+    this.host.dataset.streamReady = 'false'; this.host.setAttribute('aria-busy', 'true')
+    if (!shown) { cancelAnimationFrame(this.frame); this.frame = 0 }
+    else this.schedule(true)
+  }
+  refreshRules(): void { this.rulesRevision++; this.visible.clearSelection?.(); this.previous = undefined; this.host.dataset.streamReady = 'false'; this.schedule(true) }
   dispose(): void {
     this.disposed = true; cancelAnimationFrame(this.frame); this.marker?.dispose()
   }
@@ -68,10 +79,14 @@ export class TerminalPrivacyRenderer {
       offsets.push(joined.length); joined += strings[index]
     }
     const masked = redactIPs(joined)
-    const rows = lines.map((line, localIndex): Row => {
+    const changed = new Set<number>()
+    let historyChanged = false, wrappingChanged = false
+    const updates = lines.map((line, localIndex): Row => {
       const index = localIndex + start
       const text = strings[localIndex], safe = masked.slice(offsets[localIndex], offsets[localIndex] + text.length)
       const cached = reusable?.rows[index + trim]
+      if (cached && cached.wrapped !== line.isWrapped) wrappingChanged = true
+      if (cached && index < buffer.baseY && (cached.masked !== safe || cached.wrapped !== line.isWrapped)) historyChanged = true
       // Scrollback cannot be edited by a cursor. Reuse its styles, but always
       // refresh rows that were on-screen during the previous parse batch.
       if (cached && index + trim < reusable!.base && index < buffer.baseY && cached.text === text && cached.masked === safe && cached.wrapped === line.isWrapped) return cached
@@ -87,9 +102,18 @@ export class TerminalPrivacyRenderer {
         ansi += rendered === chars ? chars : '•'.repeat(Math.max(1, value.getWidth()))
         offset += chars.length
       }
-      return { text, masked: safe, wrapped: line.isWrapped, ansi: `${ansi}\x1b[0m` }
+      const result = { text, masked: safe, wrapped: line.isWrapped, ansi: `${ansi}\x1b[0m` }
+      if (!cached || result.ansi !== cached.ansi) changed.add(index)
+      return result
     })
-    return { rows: [...(reusable?.rows.slice(trim, start + trim) ?? []), ...rows], cols: this.raw.cols, height: this.raw.rows, base: buffer.baseY, type: buffer.type, cursorX: buffer.cursorX, cursorY: buffer.cursorY }
+    // Keep the immutable history prefix in one backing array. Copying and
+    // comparing 10,000 row references for every key in every pane causes GC
+    // pressure even when only the live screen is translated.
+    const rows = reusable?.rows ?? []
+    if (trim) rows.splice(0, trim)
+    for (let index = 0; index < updates.length; index++) rows[start + index] = updates[index]
+    rows.length = buffer.length
+    return { rows, count: buffer.length, changed, historyChanged, wrappingChanged, cols: this.raw.cols, height: this.raw.rows, base: buffer.baseY, type: buffer.type, cursorX: buffer.cursorX, cursorY: buffer.cursorY }
   }
   private inputModes(): string {
     const modes = this.raw.modes
@@ -97,18 +121,17 @@ export class TerminalPrivacyRenderer {
     return set(1, modes.applicationCursorKeysMode) + set(66, modes.applicationKeypadMode) + set(2004, modes.bracketedPasteMode) + set(1004, modes.sendFocusMode) + [1005, 1006, 1007, 1015, 1016].map((id) => set(id, this.extraModes.get(id) === true)).join('') + [9, 1000, 1002, 1003].map((id) => set(id, false)).join('') + ({ none: '', x10: set(9, true), vt200: set(1000, true), drag: set(1002, true), any: set(1003, true) }[modes.mouseTrackingMode])
   }
   private paint(): void {
-    if (this.disposed || !this.dirty) return
+    if (this.disposed || !this.shown || !this.dirty) return
     const revision = this.rulesRevision
     this.dirty = false
     const old = this.previous
-    const trim = this.marker ? this.marker.isDisposed ? old?.rows.length ?? 0 : Math.max(0, this.markerLine - this.marker.line) : old?.type === 'normal' ? old.rows.length : 0
+    const trim = this.marker ? this.marker.isDisposed ? old?.count ?? 0 : Math.max(0, this.markerLine - this.marker.line) : old?.type === 'normal' ? old.count : 0
     const next = this.snapshot(trim)
     const growth = old ? next.base - old.base + trim : 0
     const sameSize = old && old.cols === next.cols && old.height === next.height && old.type === next.type
-    const canScroll = sameSize && growth > 0 && growth <= next.height && next.rows.length === old.rows.length + growth - trim && !next.rows.slice(Math.max(0, next.base - growth)).some((row) => row.wrapped)
-    const sameRows = sameSize && !trim && growth === 0 && next.rows.length === old.rows.length && next.base === old.base
-    const historyChanged = sameRows && next.rows.slice(0, next.base).some((row, index) => row.masked !== old!.rows[index].masked || row.wrapped !== old!.rows[index].wrapped)
-    const rebuild = this.force || !sameRows && !canScroll || historyChanged || !!old && sameRows && next.rows.some((row, index) => row.wrapped !== old.rows[index].wrapped)
+    const canScroll = sameSize && growth > 0 && growth <= next.height && next.count === old.count + growth - trim && !next.rows.slice(Math.max(0, next.base - growth)).some((row) => row.wrapped)
+    const sameRows = sameSize && !trim && growth === 0 && next.count === old.count && next.base === old.base
+    const rebuild = this.force || !sameRows && !canScroll || sameRows && (next.historyChanged || next.wrappingChanged)
     this.force = false
     const viewport = this.first ? this.raw.buffer.active.viewportY : this.visible.buffer.active.viewportY
     const following = this.first ? viewport >= this.raw.buffer.active.baseY : viewport >= this.visible.buffer.active.baseY
@@ -130,7 +153,7 @@ export class TerminalPrivacyRenderer {
       }
       for (let row = 0; row < next.height; row++) {
         const index = next.base + row, line = next.rows[index]
-        if (line && (canScroll || line.ansi !== old!.rows[index]?.ansi)) output += `\x1b[${row + 1};1H${line.ansi}`
+        if (line && (canScroll || next.changed.has(index))) output += `\x1b[${row + 1};1H${line.ansi}`
       }
     }
     output += `\x1b[0m\x1b[${next.cursorY + 1};${Math.min(next.cols, next.cursorX + 1)}H\x1b[?25${this.extraModes.get(25) === false ? 'l' : 'h'}${this.inputModes()}`
@@ -141,6 +164,7 @@ export class TerminalPrivacyRenderer {
     this.visible.write(output, () => {
       if (this.disposed) return
       this.writing = false
+      if (!this.shown) return
       if (revision !== this.rulesRevision) { this.schedule(true); return }
       if (following) this.visible.scrollToBottom()
       else this.visible.scrollToLine(Math.max(0, viewport - trim))

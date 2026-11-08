@@ -43,7 +43,7 @@ async function connect(name: string) {
   await expect.poll(async () => {
     const trust = page!.getByRole('button', { name: 'Trust & connect', exact: true })
     if (await trust.isVisible()) await trust.click()
-    return page!.locator('.session-workspace.is-active-pane .terminal-footer').getByText('Connected', { exact: true }).count()
+    return page!.getByRole('region', { name: `${name} session`, exact: true }).locator('.terminal-footer').getByText('Connected', { exact: true }).count()
   }, { timeout: 20_000 }).toBe(1)
 }
 async function go(directory: string) {

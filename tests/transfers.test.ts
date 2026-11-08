@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import type { Writable } from 'node:stream'
 import type { SFTPWrapper } from 'ssh2'
 import { SshService } from '../electron/ssh-service'
 import { AppStore } from '../electron/store'
@@ -13,6 +14,7 @@ import { TransferManager } from '../electron/transfer-manager'
 import type { TransferJob } from '../shared/types'
 import { startFixture } from './fixture'
 import { scanRemoteTree } from '../electron/transfer-tree'
+import { TransferGate } from '../electron/transfer-flow'
 
 async function harness() {
   const fixture = await startFixture()
@@ -69,6 +71,109 @@ function latch() {
   return { promise, resolve }
 }
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+
+test('owner teardown blocks reentrant late transfers only until cleanup finishes, and manager disposal permanently closes admission', { timeout: 20_000 }, async () => {
+  for (const operation of ['owner', 'dispose'] as const) {
+    const h = await harness()
+    try {
+      const first = path.join(h.local, 'closing-first.bin'), late = path.join(h.local, 'late-picker.bin')
+      await fs.writeFile(first, randomBytes(4096)); await fs.writeFile(late, randomBytes(4096))
+      const paused = latch()
+      h.setHook((event) => { if (event.status === 'running') { h.manager.pause(h.ownerId, event.id); paused.resolve() } })
+      const initial = h.manager.upload(h.ownerId, h.sessionId, [first], '/', async () => true)
+      await paused.promise
+      let reentrant: Promise<unknown> | undefined
+      h.setHook((event) => {
+        if (event.status === 'canceled' && event.name === 'closing-first.bin') {
+          reentrant = h.manager.upload(h.ownerId, h.sessionId, [late], '/', async () => true)
+          void reentrant.catch(() => {})
+        }
+      })
+      if (operation === 'owner') await h.manager.cancelOwner(h.ownerId); else await h.manager.dispose()
+      await initial
+      assert.ok(reentrant)
+      await assert.rejects(reentrant, /closing|shutting down/)
+      await assert.rejects(fs.stat(path.join(h.fixture.root, 'late-picker.bin')), { code: 'ENOENT' })
+      h.setHook(() => {})
+      if (operation === 'owner') assert.deepEqual((await h.manager.upload(h.ownerId, h.sessionId, [late], '/', async () => true)).files, ['/late-picker.bin'])
+      else await assert.rejects(h.manager.upload(h.ownerId, h.sessionId, [late], '/', async () => true), /shutting down/)
+    } finally { await h.close() }
+  }
+})
+
+test('captured file-picker capabilities cannot revive after reconnect/reload reuses owner or session IDs', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const first = h.manager.capture(h.ownerId, h.sessionId), other = h.manager.capture(h.ownerId, 'another-session')
+    assert.doesNotThrow(first)
+    await h.manager.cancelSession(h.ownerId, h.sessionId)
+    assert.throws(first, /connection or window changed/)
+    assert.doesNotThrow(other, 'Canceling one session must not revoke another session\'s picker')
+    const reconnected = h.manager.capture(h.ownerId, h.sessionId)
+    assert.doesNotThrow(reconnected); assert.throws(first, /changed/)
+    await h.manager.cancelOwner(h.ownerId)
+    assert.throws(reconnected, /changed/); assert.throws(other, /changed/)
+    const reloaded = h.manager.capture(h.ownerId, h.sessionId)
+    assert.doesNotThrow(reloaded); assert.throws(first, /changed/)
+    await h.manager.dispose()
+    assert.throws(reloaded, /shutting down/)
+  } finally { await h.close() }
+})
+
+test('a paused preflight fails promptly when its SFTP subsystem closes and retries on a fresh channel without reconnecting SSH', { timeout: 20_000 }, async () => {
+  const h = await harness()
+  try {
+    const client = h.service.getClient(h.ownerId, h.sessionId), source = path.join(h.local, 'channel-retry.bin'), bytes = randomBytes(32 * 1024)
+    await fs.writeFile(source, bytes)
+    const paused = latch(); let id = ''
+    h.setHook((event) => { if (!id && event.status === 'running' && event.total > 0) { id = event.id; h.manager.pause(h.ownerId, id); paused.resolve() } })
+    const uploading = h.manager.upload(h.ownerId, h.sessionId, [source], '/', async () => true)
+    const failed = assert.rejects(uploading, /SFTP channel closed/)
+    await paused.promise
+    const started = performance.now()
+    h.fixture.closeSftpChannels()
+    await failed
+    assert.ok(performance.now() - started < 1500, 'A paused gate must not hide subsystem failure until the user resumes it')
+    assert.equal(h.events.at(-1)?.status, 'failed')
+    assert.equal(h.service.getClient(h.ownerId, h.sessionId) === client, true)
+    h.setHook(() => {})
+    assert.deepEqual((await h.manager.retry(h.ownerId, id, async () => true)).files, ['/channel-retry.bin'])
+    assert.deepEqual(await fs.readFile(path.join(h.fixture.root, 'channel-retry.bin')), bytes)
+    await h.assertShellUsable()
+  } finally { await h.close() }
+})
+
+test('a stream failure while paused releases every gate/throttle subscription instead of retaining the buffered chunk', { timeout: 20_000 }, async (context) => {
+  const h = await harness()
+  const original = TransferGate.prototype.subscribe
+  let subscriptions = 0
+  context.mock.method(TransferGate.prototype, 'subscribe', function(this: TransferGate, listener: () => void) {
+    subscriptions++
+    const unsubscribe = original.call(this, listener)
+    let active = true
+    return () => { if (active) { active = false; subscriptions-- }; unsubscribe() }
+  })
+  try {
+    const source = path.join(h.local, 'paused-stream-failure.bin')
+    await fs.writeFile(source, randomBytes(512 * 1024))
+    const sftp = await h.service.getSftp(h.ownerId, h.sessionId), create = sftp.createWriteStream.bind(sftp)
+    let writer: ReturnType<typeof create> | undefined
+    sftp.createWriteStream = ((...args: Parameters<typeof create>) => { writer = create(...args); return writer }) as typeof sftp.createWriteStream
+    const paused = latch(); let id = ''
+    h.manager.setBandwidthLimit(h.ownerId, 128 * 1024)
+    h.setHook((event) => { if (!id && event.status === 'running' && event.transferred > 0) { id = event.id; h.manager.pause(h.ownerId, id); paused.resolve() } })
+    const uploading = h.manager.upload(h.ownerId, h.sessionId, [source], '/', async () => true)
+    const failed = assert.rejects(uploading, /fixture write failed/)
+    await paused.promise; await delay(20)
+    assert.ok(subscriptions > 0, 'The paused stream should have a real pending backpressure wait')
+    ;(writer as Writable).destroy(new Error('fixture write failed'))
+    await failed
+    assert.equal(subscriptions, 0, 'A failed job must release its pending async transform and limiter wait')
+    assert.equal(h.events.at(-1)?.status, 'failed')
+    assert.equal((await fs.readdir(h.fixture.root)).some((name) => name.endsWith('.part')), false)
+    await h.assertShellUsable()
+  } finally { await h.close() }
+})
 
 test('pausing an upload holds its original stream, temporary sibling and byte offsets until resume, preserving the old destination', { timeout: 20_000 }, async () => {
   const h = await harness()

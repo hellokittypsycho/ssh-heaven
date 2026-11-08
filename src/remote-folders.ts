@@ -34,10 +34,11 @@ export function saveRemoteFolders(profileId: string | undefined, value: RemoteFo
   if (!profileId) return next
   try {
     const all = readAll(storage)
+    if (JSON.stringify(all[profileId] ?? { bookmarks: [] }) === JSON.stringify(next)) return next
     delete all[profileId]
     const entries = [...Object.entries(all).slice(-(MAX_PROFILES - 1)), [profileId, next]]
     storage.setItem(REMOTE_FOLDERS_KEY, JSON.stringify(Object.fromEntries(entries)))
-    if (typeof window !== 'undefined') window.dispatchEvent(new Event('ssh-heaven:remote-folders-change'))
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ssh-heaven:remote-folders-change', { detail: { profileId } }))
   } catch { /* Browsing remains available when local preference storage is full. */ }
   return next
 }

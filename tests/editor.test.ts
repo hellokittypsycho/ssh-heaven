@@ -10,7 +10,7 @@ import { SshService } from '../electron/ssh-service'
 import { AppStore } from '../electron/store'
 import { startFixture } from './fixture'
 
-async function harness() {
+async function harness(bound = false) {
   const fixture = await startFixture()
   const directory = await mkdtemp(path.join(tmpdir(), 'ssh-heaven-editor-'))
   const store = new AppStore(path.join(directory, 'settings.json'))
@@ -22,12 +22,44 @@ async function harness() {
     hostKey(ownerId, challenge) { queueMicrotask(() => service.resolveHostKey(ownerId, challenge.requestId, true)) }
   })
   await service.connect({ sessionId, password: fixture.password, profile: { id: 'editor-fixture', name: 'Editor fixture', host: fixture.host, port: fixture.port, username: fixture.username, authType: 'password' } }, owner)
-  const editor = new RemoteEditorService((ownerId, id) => service.getSftp(ownerId, id))
+  const getSftp = (ownerId: number, id: string) => service.getSftp(ownerId, id)
+  const editor = new RemoteEditorService(getSftp, bound ? (ownerId, id) => service.getClient(ownerId, id) : undefined)
   return {
     fixture, directory, service, editor, owner, sessionId,
     async close() { service.dispose(); await fixture.close(); await rm(directory, { recursive: true, force: true }) }
   }
 }
+
+test('editor versions cannot be reused after a session ID reconnects to another server with identical file bytes', async () => {
+  const h = await harness(true), other = await startFixture()
+  try {
+    const opened = await h.editor.read(h.owner, h.sessionId, '/welcome.txt')
+    const otherPath = path.join(other.root, 'welcome.txt'), original = await readFile(otherPath, 'utf8')
+    assert.equal(original, opened.content)
+    h.service.disconnect(h.owner, h.sessionId)
+    await h.service.connect({ sessionId: h.sessionId, password: other.password, profile: { id: 'other-editor', name: 'Other editor target', host: other.host, port: other.port, username: other.username, authType: 'password' } }, h.owner)
+    await assert.rejects(h.editor.save(h.owner, h.sessionId, opened.path, 'Old server draft must stay local', opened.version), /conflict|connection changed/i)
+    assert.equal(await readFile(otherPath, 'utf8'), original)
+    const reloaded = await h.editor.read(h.owner, h.sessionId, '/welcome.txt')
+    const saved = await h.editor.save(h.owner, h.sessionId, reloaded.path, 'Explicitly reloaded current target\n', reloaded.version)
+    assert.equal(saved.content, 'Explicitly reloaded current target\n')
+  } finally { await h.close(); await other.close() }
+})
+
+test('editor drafts remain valid when only SFTP reopens on the same live SSH connection', async () => {
+  const h = await harness(true)
+  try {
+    const opened = await h.editor.read(h.owner, h.sessionId, '/welcome.txt')
+    const client = h.service.getClient(h.owner, h.sessionId), sftp = await h.service.getSftp(h.owner, h.sessionId)
+    const closed = new Promise<void>((resolve) => sftp.once('close', () => resolve()))
+    h.fixture.closeSftpChannels(); await closed
+    const reopened = await h.service.getSftp(h.owner, h.sessionId)
+    assert.notEqual(reopened, sftp)
+    assert.equal(h.service.getClient(h.owner, h.sessionId), client)
+    const saved = await h.editor.save(h.owner, h.sessionId, opened.path, 'Same SSH connection, recovered SFTP\n', opened.version)
+    assert.equal(saved.content, 'Same SSH connection, recovered SFTP\n')
+  } finally { await h.close() }
+})
 
 test('remote editor reads and saves UTF-8 text with BOM/line endings intact and correct content hashes', { timeout: 15_000 }, async () => {
   const h = await harness()

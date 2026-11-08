@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
@@ -65,9 +65,10 @@ export interface TerminalTransport {
   writeClipboard: (text: string) => Promise<void>
 }
 
-export function TerminalView({ sessionId, active, connected, transport, onError }: {
+export const TerminalView = memo(function TerminalView({ sessionId, active, visible = true, connected, transport, onError }: {
   sessionId: string
   active: boolean
+  visible?: boolean
   connected: boolean
   transport: TerminalTransport
   onError: (error: unknown) => void
@@ -92,6 +93,7 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
   const searchRef = useRef<SearchAddon | null>(null)
   const errorRef = useRef(onError)
   const activeRef = useRef(active)
+  const visibleRef = useRef(visible)
   const connectedRef = useRef(connected)
   const [fontSize, setFontSize] = useState(storedFontSize)
   const fontSizeRef = useRef(fontSize)
@@ -103,6 +105,7 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
   const searchStateRef = useRef({ open: searchOpen, query, caseSensitive })
   errorRef.current = onError
   activeRef.current = active
+  visibleRef.current = visible
   connectedRef.current = connected
   fontSizeRef.current = fontSize
   searchStateRef.current = { open: searchOpen, query, caseSensitive }
@@ -110,7 +113,7 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
   const runSearch = useCallback((direction: 'next' | 'previous', incremental = false) => {
     const search = searchRef.current
     const state = searchStateRef.current
-    if (!search) return
+    if (!search || !visibleRef.current) return
     if (!state.open || !state.query) {
       search.clearDecorations()
       terminalRef.current?.clearSelection()
@@ -227,6 +230,7 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
       if (!host || enabled === !!privacy) return
       host.dataset.streamReady = 'false'
       terminal.clearSelection(); window.getSelection()?.removeAllRanges()
+      if (enabled && !visibleRef.current) return
       if (enabled) {
         terminal.element?.remove()
         const masked = new Terminal({ ...terminal.options, cols: terminal.cols, rows: terminal.rows, theme: themeRef.current, fontSize: fontSizeRef.current })
@@ -242,6 +246,7 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
           if (searchStateRef.current.open && searchStateRef.current.query) runSearch('next', true)
         }, extraModes)
         privacyRendererRef.current = renderer
+        renderer.setVisible(visibleRef.current)
         privacy = { terminal: masked, dispose: () => { renderer.dispose(); stopMaskedInput(); maskedScroll.dispose(); maskedResults.dispose(); maskedResize.dispose(); masked.dispose() } }
         if (host.clientWidth && host.clientHeight) maskedFit.fit()
         renderer.schedule(true)
@@ -298,6 +303,11 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
   }, [sessionId, transport, runSearch])
 
   useLayoutEffect(() => { switchPrivacyRef.current?.(streamMode.enabled); privacyRendererRef.current?.refreshRules() }, [streamMode.enabled, streamMode.rules])
+  useLayoutEffect(() => {
+    switchPrivacyRef.current?.(streamMode.enabled)
+    privacyRendererRef.current?.setVisible(visible)
+    if (visible && !privacyRendererRef.current) runSearch('next', true)
+  }, [visible, streamMode.enabled, runSearch])
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.theme = wallpaperActive ? { ...preset.terminal, background: '#00000000' } : preset.terminal
@@ -324,7 +334,7 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
       }
     })
     return () => cancelAnimationFrame(frame)
-  }, [active, connected, sessionId, transport])
+  }, [active, visible, connected, sessionId, transport])
 
   useEffect(() => {
     const update = () => setFontSize(storedFontSize())
@@ -431,4 +441,4 @@ export function TerminalView({ sessionId, active, connected, transport, onError 
       {scrolledBack && <button type="button" className="ssh-terminal-latest" aria-label="Jump to latest output" onClick={jumpToLatest}><ArrowDownToLine size={14} />Latest output</button>}
     </div>
   </div>
-}
+})

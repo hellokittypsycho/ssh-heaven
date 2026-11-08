@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowUp, ArrowUpFromLine, Bookmark, BookmarkPlus, CheckCheck, ChevronRight, Copy, Eye, EyeOff, File, FilePenLine, Folder, FolderPlus, Home, Info, Link, LoaderCircle, Pencil, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import type { RemoteEntry, SshHeavenApi } from '../../shared/types'
 import { useTransfers } from '../transfer-store'
+import { useStreamMode } from '../stream-mode'
 import { getRemoteFolders, saveRemoteFolders, type RemoteFolders } from '../remote-folders'
 import { Modal, errorMessage } from './Modal'
 import { formatBytes, TransferPanel } from './TransferPanel'
@@ -11,11 +12,20 @@ import './file-browser.css'
 const join = (directory: string, name: string) => `${directory === '/' ? '' : directory.replace(/\/$/, '')}/${name}`
 const parent = (path: string) => path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/'
 type Sort = { key: 'name' | 'size' | 'modified'; descending: boolean }
+const naturalNames = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+const exactNames = new Intl.Collator()
+const SessionTransferPanel = memo(function SessionTransferPanel({ sessionId, api, onError, onRetryComplete }: {
+  sessionId: string; api: SshHeavenApi; onError: (message: string) => void; onRetryComplete: () => void
+}) {
+  useStreamMode()
+  const jobs = useTransfers(sessionId)
+  return <TransferPanel sessionId={sessionId} jobs={jobs} api={api} onError={onError} onRetryComplete={onRetryComplete} />
+})
 function initialWidth() {
   try { return Math.min(740, Math.max(320, Number(localStorage.getItem('ssh-heaven-files-width')) || 440)) } catch { return 440 }
 }
 
-export function FileBrowser({ sessionId, profileId, connected, api, onClose, onEdit, refreshToken }: { sessionId: string; profileId?: string; connected: boolean; api: SshHeavenApi; onClose: () => void; onEdit?: (path: string) => void; refreshToken?: number }) {
+export function FileBrowser({ sessionId, profileId, connected, api, onClose, onEdit, refreshToken, active = true }: { sessionId: string; profileId?: string; connected: boolean; api: SshHeavenApi; onClose: () => void; onEdit?: (path: string) => void; refreshToken?: number; active?: boolean }) {
   const [path, setPath] = useState('.')
   const [pathInput, setPathInput] = useState('.')
   const [entries, setEntries] = useState<RemoteEntry[]>([])
@@ -40,16 +50,22 @@ export function FileBrowser({ sessionId, profileId, connected, api, onClose, onE
   const currentPath = useRef('.')
   const request = useRef(0)
   const observedRefresh = useRef(refreshToken)
+  const previousConnection = useRef(false)
+  const initialized = useRef(false)
+  const refreshPending = useRef(false)
+  const activeRef = useRef(active); activeRef.current = active
+  const connectedRef = useRef(connected); connectedRef.current = connected
   const mounted = useRef(true)
   const resize = useRef<{ x: number; width: number } | null>(null)
-  const jobs = useTransfers(sessionId)
   const busy = loading || !!operation
-  const visible = useMemo(() => entries.filter((entry) => (showHidden || !entry.name.startsWith('.')) && entry.name.toLowerCase().includes(filter.toLowerCase())).sort((a, b) => {
+  const visible = useMemo(() => {
+    const query = filter.toLowerCase()
+    return entries.filter((entry) => (showHidden || !entry.name.startsWith('.')) && entry.name.toLowerCase().includes(query)).sort((a, b) => {
     const directoryOrder = Number(b.type === 'directory') - Number(a.type === 'directory')
-    const comparison = sort.key === 'name' ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) : a[sort.key] - b[sort.key]
-    return directoryOrder || (sort.descending ? -comparison : comparison) || a.name.localeCompare(b.name)
-  }), [entries, showHidden, filter, sort])
-  const selection = entries.filter((entry) => selected.has(entry.path))
+    const comparison = sort.key === 'name' ? naturalNames.compare(a.name, b.name) : a[sort.key] - b[sort.key]
+    return directoryOrder || (sort.descending ? -comparison : comparison) || exactNames.compare(a.name, b.name)
+  }) }, [entries, showHidden, filter, sort])
+  const selection = useMemo(() => entries.filter((entry) => selected.has(entry.path)), [entries, selected])
   const single = selection.length === 1 ? selection[0] : null
   const downloadable = selection.length > 0 && selection.every((entry) => entry.type === 'file' || entry.type === 'directory')
   const removable = selection.length > 0 && selection.every((entry) => entry.type === 'file' || entry.type === 'directory')
@@ -72,31 +88,41 @@ export function FileBrowser({ sessionId, profileId, connected, api, onClose, onE
     } catch (cause) { if (mounted.current && id === request.current) { setError(errorMessage(cause)); return false } }
     finally { if (mounted.current && id === request.current) setLoading(false) }
   }, [api, sessionId, profileId])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; request.current++ } }, [])
   useEffect(() => {
-    mounted.current = true
-    if (connected) {
+    if (previousConnection.current !== connected) {
+      previousConnection.current = connected; initialized.current = false; request.current++
+      if (!connected) setLoading(false)
+    }
+    if (observedRefresh.current !== refreshToken) { observedRefresh.current = refreshToken; refreshPending.current = true }
+    if (!connected || !active) return
+    if (!initialized.current) {
+      initialized.current = true; refreshPending.current = false
       const last = getRemoteFolders(profileId).lastFolder
       void load(last || '.').then(async (success) => {
-        if (success === false && last && mounted.current && await load('.')) setNotice('The remembered folder is unavailable. Opened your remote home folder.')
+        if (success === false && last && mounted.current && connectedRef.current && await load('.')) setNotice('The remembered folder is unavailable. Opened your remote home folder.')
       })
-    }
-    return () => { mounted.current = false; request.current++ }
-  }, [connected, load, profileId])
+    } else if (refreshPending.current) { refreshPending.current = false; void load(currentPath.current, false) }
+  }, [connected, active, refreshToken, load, profileId])
+  const refreshCurrent = useCallback(async () => {
+    if (!connectedRef.current) return
+    if (!activeRef.current) { refreshPending.current = true; return }
+    await load(currentPath.current, false)
+  }, [load])
   useEffect(() => {
-    const refresh = () => setFolders(getRemoteFolders(profileId))
+    const refresh = (event?: Event) => {
+      const source = (event as CustomEvent<{ profileId?: string }> | undefined)?.detail?.profileId
+      if (event?.type === 'ssh-heaven:remote-folders-change' && source !== undefined && source !== profileId) return
+      if (event?.type === 'storage' && (event as StorageEvent).key !== null && (event as StorageEvent).key !== 'ssh-heaven:remote-folders:v1') return
+      const next = getRemoteFolders(profileId)
+      setFolders((current) => JSON.stringify(current) === JSON.stringify(next) ? current : next)
+    }
     refresh()
     window.addEventListener('ssh-heaven:remote-folders-change', refresh)
     window.addEventListener('storage', refresh)
     return () => { window.removeEventListener('ssh-heaven:remote-folders-change', refresh); window.removeEventListener('storage', refresh) }
   }, [profileId])
   useEffect(() => { try { localStorage.setItem('ssh-heaven-files-width', String(width)) } catch { /* UI preferences are optional. */ } }, [width])
-  useEffect(() => {
-    const changed = observedRefresh.current !== refreshToken
-    observedRefresh.current = refreshToken
-    // A newly connected browser already restores its remembered folder. A
-    // pre-existing global editor refresh token must not race it with home.
-    if (connected && refreshToken && changed) void load(currentPath.current, false)
-  }, [refreshToken, connected, load])
   function toggle(entry: RemoteEntry) {
     setSelected((current) => { const next = new Set(current); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next })
   }
@@ -117,7 +143,7 @@ export function FileBrowser({ sessionId, profileId, connected, api, onClose, onE
         const folder = kind === 'upload-folder' || (kind === 'download' && selection.some((entry) => entry.type === 'directory'))
         const noun = folder ? (result.files.length === 1 ? 'item' : 'items') : (result.files.length === 1 ? 'file' : 'files')
         setNotice(`${result.files.length} ${noun} ${kind === 'download' ? 'downloaded' : 'uploaded'}.`)
-        if (kind !== 'download') await load(currentPath.current, false)
+        if (kind !== 'download') await refreshCurrent()
       }
     } catch (cause) { if (mounted.current) setError(errorMessage(cause)) }
   }
@@ -134,9 +160,9 @@ export function FileBrowser({ sessionId, profileId, connected, api, onClose, onE
         let removed = 0
         try {
           for (const entry of selection) if (entry.type === 'file' || entry.type === 'directory') { await api.remove(sessionId, entry.path, entry.type); removed++ }
-        } catch (cause) { setAction(null); await load(currentPath.current, false); throw new Error(`${removed ? `${removed} items deleted. ` : ''}${errorMessage(cause)}`) }
+        } catch (cause) { setAction(null); await refreshCurrent(); throw new Error(`${removed ? `${removed} items deleted. ` : ''}${errorMessage(cause)}`) }
       }
-      setAction(null); await load(currentPath.current, false)
+      setAction(null); await refreshCurrent()
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setOperation('') }
   }
@@ -204,10 +230,10 @@ export function FileBrowser({ sessionId, profileId, connected, api, onClose, onE
       </div>)}
     </div>
     <div className="sftp-selection-bar"><span>{selection.length ? `${selection.length} selected · ${formatBytes(selection.reduce((sum, entry) => sum + (entry.type === 'file' ? entry.size : 0), 0))}` : `${visible.length} of ${entries.length} items`}</span><div className="sftp-selection-actions"><button className="icon-button" disabled={!connected || busy || selection.length > 1} title={single ? 'Selected item properties' : 'Current folder properties'} aria-label="File properties" onClick={() => setPropertiesPath(single?.path ?? path)}><Info size={14} /></button><button className="icon-button" disabled={!connected} title={single ? 'Copy selected path' : 'Copy folder path'} aria-label="Copy remote path" onClick={() => void api.writeClipboard(single?.path ?? path).then(() => setNotice('Remote path copied.')).catch((cause) => setError(errorMessage(cause)))}><Copy size={13} /></button></div></div>
-    <TransferPanel sessionId={sessionId} jobs={jobs} api={api} onError={setError} onRetryComplete={() => { if (connected) void load(currentPath.current, false) }} />
+    <SessionTransferPanel sessionId={sessionId} api={api} onError={setError} onRetryComplete={refreshCurrent} />
     {dropping && <div className="sftp-drop-overlay"><ArrowUpFromLine size={30} /><strong>Drop files or folders to upload</strong><span>To {path}</span></div>}
     {operation && <div className="file-footer"><LoaderCircle size={12} className="spin" />{operation}</div>}
-    {propertiesPath && <FileProperties sessionId={sessionId} path={propertiesPath} api={api} onClose={closeProperties} onChanged={() => { if (connected) void load(currentPath.current, false) }} />}
+    {propertiesPath && <FileProperties sessionId={sessionId} path={propertiesPath} api={api} onClose={closeProperties} onChanged={refreshCurrent} />}
     {bookmarksOpen && <Modal title="Remote folder bookmarks" onClose={closeBookmarks} className="sftp-bookmarks-modal"><p className="modal-description">Saved folders belong to this host. Your last successfully opened folder is remembered automatically.</p><form onSubmit={addBookmark}><label className="field-label">Bookmark name<input value={bookmarkName} onChange={(event) => setBookmarkName(event.target.value)} maxLength={100} autoComplete="off" /></label><label className="field-label">Bookmark path<input value={path} readOnly /></label>{bookmarkError && <div className="form-error" role="alert">{bookmarkError}</div>}<div className="modal-actions"><button type="button" className="button secondary" onClick={closeBookmarks}>Cancel</button><button className="button primary" type="submit"><BookmarkPlus size={15} />Save folder bookmark</button></div></form><div className="sftp-bookmark-list" aria-label="Saved folder bookmarks">{folders.bookmarks.map((item) => <div key={item.path}><button onClick={() => { setBookmarksOpen(false); void load(item.path) }}><Bookmark size={15} /><span><strong>{item.name}</strong><small>{item.path}</small></span></button><button className="icon-button danger-hover" aria-label={`Remove bookmark ${item.name}`} onClick={() => updateFolders((value) => ({ ...value, bookmarks: value.bookmarks.filter((entry) => entry.path !== item.path) }))}><Trash2 size={14} /></button></div>)}{!folders.bookmarks.length && <p>No folders saved for this host yet.</p>}</div></Modal>}
     {action && <Modal title={action === 'mkdir' ? 'Create a folder' : action === 'rename' ? 'Rename item' : selection.length > 1 ? `Delete ${selection.length} items?` : 'Delete item?'} onClose={closeAction} className="small-modal"><form onSubmit={(event) => void performAction(event)}>
       {action === 'remove' ? <p className="modal-description">Delete <strong>{single?.name ?? `${selection.length} selected items`}</strong>? Files cannot be recovered. Only empty folders can be deleted.</p> : <label className="field-label">{action === 'mkdir' ? 'Folder name' : 'New name'}<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={255} autoFocus /></label>}

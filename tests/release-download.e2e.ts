@@ -11,10 +11,12 @@ import { _electron, expect, type ElectronApplication, type Page } from '@playwri
 // Standalone post-publication verification, deliberately excluded from the
 // packaged regression runner. It downloads real public bytes, never installs.
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
+const baselineVersion = process.env.SSH_HEAVEN_BASELINE_VERSION || '0.11.0'
 const baseline = process.env.SSH_HEAVEN_BASELINE_EXECUTABLE
-if (!baseline || !(await stat(baseline).catch(() => null))?.isFile()) throw new Error('Set SSH_HEAVEN_BASELINE_EXECUTABLE to the preserved packaged SSH Heaven 0.10.0 executable. Run only after publishing the new stable release.')
+if (!baseline || !(await stat(baseline).catch(() => null))?.isFile()) throw new Error('Set SSH_HEAVEN_BASELINE_EXECUTABLE to the preserved packaged SSH Heaven executable. Run only after publishing the new stable release.')
 const version = (JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { version: string }).version
-assert.equal(version, '0.11.0', 'This manual check verifies the real 0.10.0 updater downloading the published 0.11.0 release')
+assert.match(baselineVersion, /^\d+\.\d+\.\d+$/)
+assert.notEqual(version, baselineVersion, 'Publish a newer release before checking its download from the old updater')
 const installer = path.join(root, 'release', `SSH Heaven Setup ${version}.exe`)
 const installerMetadata = await stat(installer).catch(() => null)
 if (!installerMetadata?.isFile()) throw new Error('Build the current Windows installer before checking its public download.')
@@ -122,7 +124,7 @@ try {
     }) as typeof https.get
     return { version: result.version, packaged: result.packaged, dataDirectory: app.getPath('userData') }
   }, { endpoint, version })
-  assert.equal(installed.version, '0.10.0', 'Use the preserved old updater, not the current build')
+  assert.equal(installed.version, baselineVersion, 'Use the preserved old updater, not the current build')
   assert.equal(installed.packaged, true)
   assert.equal(path.resolve(installed.dataDirectory), path.resolve(directory), 'The baseline must use isolated settings, never personal app data')
   await hidden()
@@ -131,7 +133,7 @@ try {
   const initialUrl = page.url()
   await expect.poll(async () => (await page!.evaluate(() => window.sshHeaven.getUpdateState())).status, { timeout: 25_000, message: 'Publish the expected stable release before running the old updater check' }).toBe('available')
   const available = await page.evaluate(() => window.sshHeaven.getUpdateState())
-  assert.equal(available.currentVersion, '0.10.0'); assert.equal(available.version, version); assert.equal(available.downloadAvailable, true)
+  assert.equal(available.currentVersion, baselineVersion); assert.equal(available.version, version); assert.equal(available.downloadAvailable, true)
   const before = await probe()
   assert.equal(before.metadataTag, `v${version}`)
   assert.equal(before.assetSize, expected.size)
@@ -165,10 +167,10 @@ try {
   assert.ok(after.requests.some((request) => request.kind === 'installer' && request.status === 200 && request.complete))
   assert.equal(popups, 0); assert.equal(page.url(), initialUrl); assert.deepEqual(errors, [])
   await hidden()
-  await page.screenshot({ path: path.join(root, 'test-results', 'release-download-0.10.0.png') })
+  await page.screenshot({ path: path.join(root, 'test-results', `release-download-${baselineVersion}.png`) })
   // Deliberately never click Install now. The verified executable is removed
   // only after the old application closes, with its own temporary user data.
-  console.log(`Live previous-release download passed: packaged 0.10.0 discovered v${version}, fetched metadata only before the explicit Download click, then downloaded ${expected.size} verified bytes via real GitHub HTTPS. SHA-256 matches the local release; zero installer executions or browser opens; no visible/focused native window.`)
+  console.log(`Live previous-release download passed: packaged ${baselineVersion} discovered v${version}, fetched metadata only before the explicit Download click, then downloaded ${expected.size} verified bytes via real GitHub HTTPS. SHA-256 matches the local release; zero installer executions or browser opens; no visible/focused native window.`)
 } catch (error) {
   if (page && app) {
     await page.screenshot({ path: path.join(root, 'test-results', 'release-download-failure.png') }).catch(() => {})

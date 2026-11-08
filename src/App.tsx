@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { Activity, ArrowLeft, ArrowRight, Check, CheckCheck, ChevronRight, CircleHelp, Columns2, Command, FileKey2, Folder, FolderOpen, House, KeyRound, Layers, LayoutGrid, ListPlus, LoaderCircle, LockKeyhole, Network, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Play, Plus, Search, Server, Settings2, ShieldCheck, ShieldQuestion, ShieldX, Star, TerminalSquare, Trash2, Unplug, X, Zap } from 'lucide-react'
 import type { ConnectRequest, CredentialStatus, GeneratedKey, HostKeyChallenge, HostProfile, LibraryState, RecentHost, SavedWorkspace, SessionStatus, UpdateState, WorkspaceLayout, McpState } from '../shared/types'
 import { FileBrowser } from './components/FileBrowser'
@@ -61,6 +61,16 @@ function receiveOutput(id: string, data: Uint8Array) {
   }
   outputListeners.get(id)?.forEach((listener) => listener(data))
 }
+
+const SessionFiles = memo(function SessionFiles({ sessionId, profileId, connected, visible, refreshToken, onClose, onEdit }: {
+  sessionId: string; profileId: string; connected: boolean; visible: boolean; refreshToken: number
+  onClose: () => void; onEdit: (sessionId: string, path: string) => void
+}) {
+  // Privacy is a live external setting even when ordinary props are unchanged.
+  useStreamMode()
+  const edit = useCallback((path: string) => onEdit(sessionId, path), [sessionId, onEdit])
+  return <div className="session-file-slot" hidden={!visible}><FileBrowser sessionId={sessionId} profileId={profileId} connected={connected} active={visible} api={api} onClose={onClose} onEdit={edit} refreshToken={refreshToken} /></div>
+})
 
 function ConnectionForm({ initial, onConnect, onSave, onError, saved, favorite, groups, profiles, onSelectHost, onOpenPalette, onGenerateKey, generatedKey, credentialStatus, onForgetCredential, library, credentialError }: {
   initial: Draft
@@ -246,7 +256,7 @@ export function App() {
   const [notifyScripts, setNotifyScripts] = useState(() => { try { return localStorage.getItem('ssh-heaven:script-notifications') === 'true' } catch { return false } })
   const notifyScriptsRef = useRef(notifyScripts)
   notifyScriptsRef.current = notifyScripts
-  const [editorRefreshToken, setEditorRefreshToken] = useState(0)
+  const [editorRefreshTokens, setEditorRefreshTokens] = useState<Record<string, number>>({})
   const [generatedKey, setGeneratedKey] = useState<{ id: string; path: string } | null>(null)
   const [showFiles, setShowFiles] = useState(true)
   const [toast, setToast] = useState<{ message: string; kind: 'error' | 'success' } | null>(null)
@@ -281,9 +291,13 @@ export function App() {
   const refreshLibrary = useCallback(async () => { setLibrary(await api.getLibrary()) }, [])
   const onMcpResolved = useCallback((id: string) => { setMcpState((state) => state ? { ...state, pendingApprovals: state.pendingApprovals.filter((request) => request.id !== id) } : state) }, [])
   const forgetCredential = useCallback(async (id: string) => { await api.forgetCredential(id); await refreshCredentialStatus() }, [refreshCredentialStatus])
-  const closeEditor = useCallback(() => { setEditing(null); setEditorVisible(false); setEditorTabCount(0); setEditorRefreshToken((current) => current + 1) }, [])
+  const closeEditor = useCallback(() => { setEditing(null); setEditorVisible(false); setEditorTabCount(0) }, [])
+  const refreshEditorFiles = useCallback((sessionId: string) => setEditorRefreshTokens((current) => ({ ...current, [sessionId]: (current[sessionId] ?? 0) + 1 })), [])
+  const hideEditor = useCallback(() => setEditorVisible(false), [])
+  const hideFiles = useCallback(() => setShowFiles(false), [])
   const editFile = useCallback((sessionId: string, path: string) => { setEditing((current) => ({ sessionId, path, requestId: (current?.requestId ?? 0) + 1 })); setEditorVisible(true) }, [])
   const active = sessions.find((session) => session.id === activeTab)
+  const sessionLabels = useMemo(() => Object.fromEntries(sessions.map((session) => [session.id, session.profile.name])), [sessions])
   const connectedCount = sessions.filter((session) => session.status === 'connected').length
   const connectedSessions = sessions.filter((session) => session.status === 'connected')
   const scriptTargets = connectedSessions.map((session) => ({ sessionId: session.id, name: session.profile.name, host: session.profile.host, username: session.profile.username, port: session.profile.port }))
@@ -424,6 +438,7 @@ export function App() {
     setSessions((current) => current.filter((session) => session.id !== id))
     setActiveTab((current) => current === id ? remaining[Math.max(0, index - 1)]?.id ?? remaining[0]?.id ?? 'new' : current)
     histories.delete(id)
+    setEditorRefreshTokens((current) => { if (!(id in current)) return current; const next = { ...current }; delete next[id]; return next })
     outputListeners.delete(id)
     setChallenges((current) => current.filter((challenge) => challenge.sessionId !== id))
     setWorkspaceNeeds((current) => current.filter((item) => item.sessionId !== id))
@@ -782,12 +797,12 @@ export function App() {
             <div className="session-panes" data-layout={layout} data-count={paneIds.length}>
               {sessions.map((session) => <section key={session.id} data-session-id={session.id} className={`session-workspace ${paneIds.includes(session.id) ? '' : 'hidden-workspace'} ${activeTab === session.id ? 'is-active-pane' : ''}`} aria-label={`${session.profile.name} session`} style={{ order: paneIds.indexOf(session.id) }} onPointerDownCapture={() => setActiveTab(session.id)}>
                 <div className="terminal-column"><div className="terminal-heading"><div><TerminalSquare size={15} /><span>{session.profile.username}@{session.profile.host}</span><span className="terminal-port">:{session.profile.port}</span></div><div>{layout !== 'tabs' && <div className="pane-order-controls"><button className="icon-button" aria-label={`Move ${session.profile.name} pane left`} title="Move pane earlier" disabled={paneIds.indexOf(session.id) <= 0} onClick={() => movePane(session.id, -1)}><ArrowLeft size={12} /></button><button className="icon-button" aria-label={`Move ${session.profile.name} pane right`} title="Move pane later" disabled={!paneIds.includes(session.id) || paneIds.indexOf(session.id) >= paneIds.length - 1} onClick={() => movePane(session.id, 1)}><ArrowRight size={12} /></button></div>}<button className="icon-button danger-hover" title="Disconnect" aria-label="Disconnect session" disabled={session.status === 'disconnected' || session.status === 'error'} onClick={() => void disconnectSession(session.id).catch(notifyError)}><Unplug size={15} /></button></div></div>
-                <div className="terminal-container"><TerminalView sessionId={session.id} active={activeTab === session.id} connected={session.status === 'connected'} transport={transport} onError={notifyError} />{session.status === 'connecting' && <div className="connection-overlay"><LoaderCircle size={25} className="spin" /><strong>Connecting to {session.profile.host}</strong><span>{session.retryMessage || 'Opening your secure shell…'}</span><button className="button secondary compact" onClick={() => void disconnectSession(session.id).catch(notifyError)}>Cancel connection</button></div>}</div>
+                <div className="terminal-container"><TerminalView sessionId={session.id} active={activeTab === session.id} visible={!!active && paneIds.includes(session.id)} connected={session.status === 'connected'} transport={transport} onError={notifyError} />{session.status === 'connecting' && <div className="connection-overlay"><LoaderCircle size={25} className="spin" /><strong>Connecting to {session.profile.host}</strong><span>{session.retryMessage || 'Opening your secure shell…'}</span><button className="button secondary compact" onClick={() => void disconnectSession(session.id).catch(notifyError)}>Cancel connection</button></div>}</div>
                 {(session.status === 'error' || session.status === 'disconnected') && <div className={`session-notice ${session.status === 'error' ? 'error-message' : ''}`} role="status"><Unplug size={16} /><div><strong>{session.status === 'error' ? 'Connection failed' : 'Session disconnected'}</strong>{session.message && <span>{session.message}</span>}{session.retryMessage && <span>{session.retryMessage}</span>}</div><button className="button secondary compact" onClick={() => { void disconnectSession(session.id).catch(notifyError); chooseHost(profiles.find((profile) => profile.id === session.profile.id && sameEndpoint(profile, session.profile)) ?? session.profile); setCredentialSessionId(session.id) }}>Reconnect<ArrowRight size={13} /></button></div>}
                 <div className="terminal-footer"><span><span className={`status-dot ${session.status === 'connected' ? 'online' : 'offline'}`} />{session.status === 'connected' ? 'Connected' : session.status === 'connecting' ? 'Connecting' : 'Disconnected'}</span><span>SSH · {session.profile.host}:{session.profile.port}</span><span>UTF-8</span></div></div>
               </section>)}
             </div>
-            {sessions.map((session) => <div className="session-file-slot" key={session.id} hidden={!showFiles || activeTab !== session.id}><FileBrowser sessionId={session.id} connected={session.status === 'connected'} api={api} onClose={() => setShowFiles(false)} profileId={session.profile.id} onEdit={(path) => editFile(session.id, path)} refreshToken={editorRefreshToken} /></div>)}
+            {sessions.map((session) => <SessionFiles key={session.id} sessionId={session.id} profileId={session.profile.id} connected={session.status === 'connected'} visible={showFiles && activeTab === session.id} onClose={hideFiles} onEdit={editFile} refreshToken={editorRefreshTokens[session.id] ?? 0} />)}
           </div>
         </div>
       </div>
@@ -797,7 +812,7 @@ export function App() {
     {streamRulesOpen && <StreamRules onClose={() => setStreamRulesOpen(false)} />}{paletteOpen && <CommandPalette sessions={sessions} activeSessionId={active?.id} onSelectSession={selectTerminalSession} onUpdates={checkUpdates} profiles={profiles} onSelectHost={chooseHost} onNewConnection={newConnection} onHelp={openHelp} onHome={openHome} onGenerateKey={openKeyGenerator} onAppearance={openAppearance} onBulkImport={openBulkImport} onGroupCommand={openGroupCommand} onWorkspaces={openWorkspaces} onManagement={openManagement} onDashboard={openDashboard} onTunnels={openTunnels} onMcp={openMcp} onScripts={openScripts} onVault={openVault} onToggleStreamMode={streamMode.toggle} streamMode={streamMode.enabled} onClose={closePalette} quickConnectIds={quickConnectIds} quickConnecting={quickConnecting} onQuickConnect={quickConnect} />}
     {keyGeneratorOpen && <KeyGenerator api={api} onClose={closeKeyGenerator} onUseKey={keyGeneratorForVault ? (key) => { void addGeneratedVaultKey(key) } : useGeneratedKey} useKeyLabel={keyGeneratorForVault ? 'Return to vault' : undefined} useKeyBusy={addingVaultKey} />}
     {appearanceOpen && <Appearance onClose={closeAppearance} />}
-    {editing && <RemoteEditor sessionLabels={Object.fromEntries(sessions.map((session) => [session.id, session.profile.name]))} sessionId={editing.sessionId} path={editing.path} api={api} requestId={editing.requestId} visible={editorVisible} onHide={() => setEditorVisible(false)} onTabCountChange={setEditorTabCount} onSaved={() => setEditorRefreshToken((value) => value + 1)} onClose={closeEditor} />}
+    {editing && <RemoteEditor sessionLabels={sessionLabels} sessionId={editing.sessionId} path={editing.path} api={api} requestId={editing.requestId} visible={editorVisible} onHide={hideEditor} onTabCountChange={setEditorTabCount} onSaved={refreshEditorFiles} onClose={closeEditor} />}
     {bulkImportOpen && <BulkImport api={api} profiles={profiles} groups={groups} library={library} onImported={refreshImportedHosts} onClose={closeBulkImport} />}
     {commandGroup !== null && <GroupCommand api={api} profiles={profiles} initialGroup={commandGroup} initialCommand={initialGroupCommand} onClose={closeGroupCommand} />}
     {managementOpen && <ManagementPanel key={managementStart} initialTab={managementStart} onInstallUpdate={reviewInstall} api={api} profiles={profiles} onChanged={refreshImportedHosts} onClose={closeManagement} onRunCommand={(group, command) => { setManagementOpen(false); setInitialGroupCommand(command); setCommandGroup(group) }} />}

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { TextDecoder } from 'node:util'
 import type { SFTPWrapper, Stats } from 'ssh2'
@@ -76,16 +76,31 @@ async function readFile(sftp: SFTPWrapper, filename: string, signal?: AbortSigna
 
 /** All operations remain on the owner-scoped SSH connection; no remote code runs. */
 export class RemoteEditorService {
-  constructor(private readonly getSftp: (ownerId: number, sessionId: string) => Promise<SFTPWrapper>) {}
+  private readonly versions = new WeakMap<object, Buffer>()
+  constructor(private readonly getSftp: (ownerId: number, sessionId: string) => Promise<SFTPWrapper>, private readonly getConnection?: (ownerId: number, sessionId: string) => object) {}
+
+  private binding(ownerId: number, sessionId: string) {
+    const client = this.getConnection?.(ownerId, sessionId)
+    let secret = client && this.versions.get(client)
+    if (client && !secret) { secret = randomBytes(32); this.versions.set(client, secret) }
+    return {
+      check: () => { if (client && this.getConnection!(ownerId, sessionId) !== client) throw new Error('Save conflict: the SSH connection changed. Reload this file from the current connection before saving your draft.') },
+      version: (hash: string) => secret ? createHmac('sha256', secret).update(hash).digest('hex') : hash
+    }
+  }
 
   async read(ownerId: number, sessionValue: unknown, value: unknown, signal?: AbortSignal): Promise<RemoteFile> {
     signal?.throwIfAborted()
     const sessionId = identifier(sessionValue, 'session identifier')
     const filename = remotePath(value)
+    const binding = this.binding(ownerId, sessionId)
     const sftp = await interrupted(this.getSftp(ownerId, sessionId), signal)
+    binding.check()
     // Cancellation returns promptly while a pending OPEN/CLOSE finishes its
     // bounded cleanup; cancellation does not discard an in-flight OPEN handle.
-    return interrupted(readFile(sftp, filename, signal), signal)
+    const result = await interrupted(readFile(sftp, filename, signal), signal)
+    binding.check()
+    return { ...result, version: binding.version(result.version) }
   }
 
   async save(ownerId: number, sessionValue: unknown, value: unknown, content: unknown, expectedValue: unknown, signal?: AbortSignal): Promise<RemoteFile> {
@@ -98,13 +113,16 @@ export class RemoteEditorService {
     const bytes = Buffer.from(content, 'utf8')
     if (bytes.length > MAX_EDITOR_BYTES) throw new Error('The edited file exceeds the 2 MiB editor limit.')
     if (decodeText(bytes) !== content) throw new Error('The edited file contains invalid Unicode text.')
+    const binding = this.binding(ownerId, sessionId)
     const sftp = await interrupted(this.getSftp(ownerId, sessionId), signal)
+    binding.check()
     const existing = await metadata(sftp, filename, false)
     if (!existing.isFile()) throw new Error('Saving symbolic links and folders is disabled. Open the actual regular file instead.')
     const expected = expectedValue.toLowerCase()
     const current = await readFile(sftp, filename, signal)
     signal?.throwIfAborted()
-    if (current.version !== expected) throw new Error('Save conflict: this file changed on the server. Reload it before saving your changes.')
+    binding.check()
+    if (binding.version(current.version) !== expected) throw new Error('Save conflict: this file or its SSH connection changed. Reload it before saving your changes.')
     const temporary = path.posix.join(path.posix.dirname(filename), `.ssh-heaven-edit-${randomUUID()}.part`)
     let ownsTemporary = false
     try {
@@ -114,6 +132,7 @@ export class RemoteEditorService {
         let written = 0
         while (written < bytes.length) {
           signal?.throwIfAborted()
+          binding.check()
           const length = Math.min(64 * 1024, bytes.length - written)
           await rpc<void>((callback) => sftp.write(handle, bytes, written, length, written, (error) => callback(error, undefined)))
           written += length
@@ -123,7 +142,8 @@ export class RemoteEditorService {
       // commit to catch changes that occurred while the sibling was written.
       const latest = await readFile(sftp, filename, signal)
       signal?.throwIfAborted()
-      if (latest.version !== expected) throw new Error('Save conflict: this file changed on the server while saving. Reload it before saving your changes.')
+      binding.check()
+      if (binding.version(latest.version) !== expected) throw new Error('Save conflict: this file changed on the server while saving. Reload it before saving your changes.')
       if (!(await metadata(sftp, filename, false)).isFile()) throw new Error('The remote file changed to a symbolic link or folder. Reload before saving.')
       const mode = existing.mode & 0o777
       // The server's umask may have removed bits passed to OPEN. Preserve the
@@ -133,8 +153,11 @@ export class RemoteEditorService {
         if (((await metadata(sftp, temporary, false)).mode & 0o777) !== mode) throw new Error('The server could not preserve the original file permissions. The original file was preserved.')
       }
       signal?.throwIfAborted()
+      binding.check()
       await finalizeUpload(sftp, temporary, filename, true)
-      return readFile(sftp, filename, signal)
+      const result = await readFile(sftp, filename, signal)
+      binding.check()
+      return { ...result, version: binding.version(result.version) }
     } finally {
       if (ownsTemporary) await rpc<void>((callback) => sftp.unlink(temporary, callback)).catch(() => {})
     }

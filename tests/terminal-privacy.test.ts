@@ -33,11 +33,20 @@ test('private terminal reuses 10,000 immutable history rows for steady-state edi
     renderer.schedule(true); flush()
     assert.ok(translations >= 10_000, 'The initial transition must sanitize the entire existing history')
     assert.equal(writes[0].includes('192.0.2.88'), false)
+    const history = (renderer as unknown as { previous: { rows: { masked: string; wrapped: boolean }[] } }).previous.rows
+    let historicalComparisons = 0
+    for (let index = 0; index < base; index++) {
+      const row = history[index], masked = row.masked, wrapped = row.wrapped
+      Object.defineProperty(row, 'masked', { get() { historicalComparisons++; return masked } })
+      Object.defineProperty(row, 'wrapped', { get() { historicalComparisons++; return wrapped } })
+    }
     reads = 0; translations = 0; cells = 0; edited = true
     renderer.schedule(); flush()
     assert.ok(reads <= 26, `One-row editing read ${reads} rows; only the live screen should be scanned`)
     assert.ok(translations <= 24)
     assert.ok(cells <= 80 * 24)
+    assert.equal(historicalComparisons, 0, 'A live edit must not compare the entire immutable history')
+    assert.equal((renderer as unknown as { previous: { rows: unknown[] } }).previous.rows, history, 'History backing storage must not be copied for every key')
     assert.equal(resets, 1, 'An ordinary row edit must patch the existing mirror')
     assert.equal(writes.at(-1)!.includes('198.51.100.42'), false)
     reads = 0; translations = 0; cells = 0; base++; length++

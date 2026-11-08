@@ -102,6 +102,8 @@ Click the play button beside a named group, or open **Run group command** from t
 
 The editor accepts regular UTF-8 text files up to 2 MiB. It preserves a UTF-8 BOM and uniform line endings; mixed line endings normalize to LF with a footer indication. Saves use a temporary sibling and check content hashes before and after writing it. A detected remote change preserves the draft and requires reloading before saving. SFTP does not provide an atomic compare-and-swap operation, so edits made by another writer in the final rename interval cannot be locked out.
 
+Editor version tokens also bind to the SSH connection that read the file. Reusing a disconnected session for another server cannot apply an old draft, even when both files have identical bytes; the draft stays local until you explicitly reload from the current connection. Reopening only the SFTP subsystem on the same live SSH connection keeps the draft's version valid.
+
 Recent history records successful connections, including connections you do not add to the host library. It contains host metadata and timestamps only and can be cleared from Home.
 
 New keys are generated into unique files under the app's `ssh-keys` user-data folder; there is no destination picker. A matching password of at least 12 characters is required. Private keys use OpenSSH AES-256-CTR encryption with bcrypt PBKDF (64 rounds); the folder and private files receive owner-only permissions (`0700`/`0600` on Unix and current-account ACLs on Windows). Existing keys are never overwritten. Generation and password verification run in workers so SSH stays responsive. Only an explicit, PIN- and password-verified View key request returns decrypted private material to the interface. Keep an encrypted backup; forgotten key passwords cannot be recovered.
@@ -150,6 +152,8 @@ Use file checkboxes or Ctrl-click to select multiple files. Drag the divider bet
 
 ## Validation
 
+Background sessions keep their SSH state and terminal parsing, while hidden Stream-mode mirrors pause visual work and catch up before becoming visible. File browsers defer initial reads and editor-save refreshes until visible. Saving one document refreshes its own session, and transfer progress updates only the relevant session's transfer panel. Editor typing uses incremental UTF-8 byte accounting and immutable document trees; file serialization happens for explicit save review.
+
 ```powershell
 npm run typecheck
 npm test
@@ -186,7 +190,7 @@ npm run dist:win
 
 The NSIS installer and unpacked application are generated in `release/`. Preview installers are unsigned and include GitHub update checks and user-triggered downloading/installation. Signing and custom release hosting have a separate prepared setup; see [RELEASE.md](RELEASE.md).
 
-Run `npm run test:packaged` after packaging to run all twenty-three automated end-to-end suites against the Windows executable, including SSH/SFTP, encrypted key generation/viewing, vault, scripts, themes, privacy, input timing, navigation, connection defaults, and in-app update downloading. `npm run test:updates` requires a current packaged build; its process-launch interceptor prevents any installer from running. Actual installer execution and native physical window movement require separate manual validation. The separate `npm run test:drag` harness requires real native window drags; renderer events do not prove OS window movement.
+Run `npm run test:packaged` after packaging to run all twenty-five automated end-to-end suites against the Windows executable, including SSH/SFTP, encrypted key generation/viewing, vault, scripts, themes, privacy, input timing, navigation, connection defaults, and in-app update downloading. The performance regressions include twelve simultaneous SSH sessions and six large editor tabs with undo/redo, selection and format preservation. `npm run test:updates` requires a current packaged build; its process-launch interceptor prevents any installer from running. Actual installer execution and native physical window movement require separate manual validation. The separate `npm run test:drag` harness requires real native window drags; renderer events do not prove OS window movement.
 
 For background-only testing, set `$env:SSH_HEAVEN_BACKGROUND_TEST = '1'` before running a suite. The test app renders offscreen without showing or focusing a window; keyboard/pointer events stay inside its isolated renderer. In this mode native maximize, focus, caption-overlay, and physical-drag checks are skipped, and large layout tests use a resized offscreen viewport.
 

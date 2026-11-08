@@ -29,6 +29,6 @@ The listener binds only to `127.0.0.1`, requires a random authentication token, 
 - **No connected sessions:** connect a host in SSH Heaven first. Saved host inventory is available independently of a live session.
 - **Request timed out:** bring SSH Heaven forward and review the pending request before it expires. Use the generated timeout settings.
 - **Connection changed:** the SSH session reconnected or disconnected during review. Ask the assistant to make a fresh request against the current session.
-- **File conflict:** the remote file changed since it was read. Read the current version again and review a new edit.
+- **File conflict:** the remote file or SSH connection changed since it was read. Treat the returned file version as opaque: read the current version again and review a new edit.
 
 Configuration references: [Codex MCP configuration](https://developers.openai.com/codex/mcp), [MCP client setup](https://modelcontextprotocol.io/quickstart/user), and the [official TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk).

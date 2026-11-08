@@ -16,6 +16,7 @@ export interface SshFixture {
   root: string
   privateKeyPath?: string
   passphrase?: string
+  closeSftpChannels(): void
   close(): Promise<void>
 }
 
@@ -62,6 +63,7 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
     fs.writeFileSync(privateKeyPath, identity.privateKey, { mode: 0o600 })
   }
   const clients = new Set<Connection>()
+  const sftpChannels = new Map<object, () => void>()
   const fileDescriptors = new Set<number>()
   const scriptChildren = new Set<ChildProcessWithoutNullStreams>()
   // Windows chmod has no POSIX rwx matrix. Retain the requested wire mode in
@@ -338,12 +340,17 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
           fs.rmdirSync(localPath)
           sftp.status(requestId, STATUS_CODE.OK)
         }))
-        sftp.on('close', () => {
+        const cleanup = () => {
+          sftpClosed = true
+          sftpChannels.delete(sftp)
           for (const value of handles.values()) {
             if (value.kind === 'file' && fileDescriptors.delete(value.fd)) fs.closeSync(value.fd)
           }
           handles.clear()
-        })
+        }
+        sftp.on('close', cleanup)
+        sftp.on('end', () => { cleanup(); sftp.end() })
+        sftpChannels.set(sftp, () => { cleanup(); sftp.end() })
       })
     }))
   })
@@ -357,6 +364,7 @@ export async function startFixture(options: FixtureOptions = {}): Promise<SshFix
   let closed = false
   return {
     host, port: address.port, username, password, root, privateKeyPath, passphrase,
+    closeSftpChannels() { for (const close of [...sftpChannels.values()]) close() },
     async close() {
       if (closed) return
       closed = true

@@ -33,6 +33,13 @@ test('large malformed output remains bounded and a later valid completion still 
   assert.deepEqual(parser.consume(value).data, value)
   assert.equal(parser.consume(marker(255)).exitCode, 255)
 })
+test('detaching a completed parser preserves a trailing partial terminal escape without parsing later output', () => {
+  const parser = new ScriptCompletionParser(nonce)
+  const parsed = parser.consume(Buffer.concat([marker(0), Buffer.from('prompt\x1b')]))
+  assert.equal(parsed.exitCode, 0)
+  assert.deepEqual(Buffer.concat([parsed.data, parser.flush()]), Buffer.from('prompt\x1b'))
+  assert.equal(parser.flush().length, 0)
+})
 test('the real child shell preserves Unicode, tabs, quotes, trailing newlines, and its actual exit status', { timeout: 15_000 }, async () => {
   const script = "printf '%s\\n' 'quotes\" and 中文'\nprintf '\\tend\\n'\nexit 7\n\n"
   const { payload, parser } = terminalScript(script)

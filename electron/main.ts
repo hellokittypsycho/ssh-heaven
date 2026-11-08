@@ -433,7 +433,7 @@ app.whenReady().then(async () => {
     hostKey: (id, event) => send(id, channels.hostKey, event)
   }, async (profile) => ({ ...(profile.authType === 'password' ? { password: await vault.get(profile) } : {}) }))
   transfers = new TransferManager((ownerId, sessionId) => service.getSftp(ownerId, sessionId), (id, event) => send(id, channels.transfer, event))
-  editor = new RemoteEditorService((ownerId, sessionId) => service.getSftp(ownerId, sessionId))
+  editor = new RemoteEditorService((ownerId, sessionId) => service.getSftp(ownerId, sessionId), (ownerId, sessionId) => service.getClient(ownerId, sessionId))
   bulkImport = new BulkImportService(store, vault, keyAllowed)
   groupCommands = new GroupCommandManager(store, vault, service, (id, event) => send(id, channels.groupCommand, event))
   metrics = new MetricsService(service)

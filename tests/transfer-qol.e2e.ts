@@ -139,6 +139,57 @@ try {
   await page!.keyboard.type('echo transfer-qol-still-connected'); await page!.keyboard.press('Enter')
   await expect(page!.locator('.session-workspace.is-active-pane .xterm-rows')).toContainText('transfer-qol-still-connected')
 
+  stage = 'delayed native picker after reconnect'
+  await limit.selectOption('0')
+  const staleFile = path.join(temporary, 'stale-picker-must-not-upload.txt'), freshFile = path.join(temporary, 'fresh-picker-192.0.2.51-CUSTOMSECRET.txt')
+  await writeFile(staleFile, 'This old picker must not cross a connection lifecycle boundary.')
+  await writeFile(freshFile, 'A fresh explicit picker still works after reconnect.')
+  const sessionId = await page!.locator('.session-workspace.is-active-pane').getAttribute('data-session-id')
+  assert.ok(sessionId)
+  await app!.evaluate(({ dialog }) => {
+    const held = { waiting: false, release: undefined as undefined | ((paths: string[]) => void) }
+    ;(globalThis as unknown as { transferPickerFixture: typeof held }).transferPickerFixture = held
+    dialog.showOpenDialog = (() => new Promise((resolve) => {
+      held.waiting = true
+      held.release = (filePaths) => resolve({ canceled: false, filePaths })
+    })) as typeof dialog.showOpenDialog
+  })
+  await page!.evaluate((sessionId) => {
+    const pending = window.sshHeaven.upload(sessionId, '/').then(() => 'unexpected success', (error: unknown) => String(error))
+    ;(window as unknown as { stalePickerResult: Promise<string> }).stalePickerResult = pending
+  }, sessionId)
+  await expect.poll(() => app!.evaluate(() => (globalThis as unknown as { transferPickerFixture: { waiting: boolean } }).transferPickerFixture.waiting)).toBe(true)
+  await page!.evaluate(async ({ sessionId, password }) => {
+    const profile = (await window.sshHeaven.listProfiles()).find((profile) => profile.name === 'Transfer QoL fixture')!
+    await window.sshHeaven.disconnect(sessionId)
+    await window.sshHeaven.connect({ sessionId, profile, password })
+  }, { sessionId, password: fixture.password })
+  await app!.evaluate((_electron, staleFile) => (globalThis as unknown as { transferPickerFixture: { release: (paths: string[]) => void } }).transferPickerFixture.release([staleFile]), staleFile)
+  assert.match(await page!.evaluate(() => (window as unknown as { stalePickerResult: Promise<string> }).stalePickerResult), /connection or window changed|closing/)
+  await assert.rejects(stat(path.join(fixture.root, path.basename(staleFile))), { code: 'ENOENT' })
+  assert.equal((await probe()).some((event) => event.name === path.basename(staleFile)), false)
+  await chooseFiles([freshFile])
+  await expect(files.getByRole('button', { name: 'Upload files', exact: true })).toBeEnabled()
+  await files.getByRole('button', { name: 'Upload files', exact: true }).click()
+  await expect(row(path.basename(freshFile))).toHaveAttribute('aria-label', `upload ${path.basename(freshFile)}: completed`)
+  assert.equal(await readFile(path.join(fixture.root, path.basename(freshFile)), 'utf8'), 'A fresh explicit picker still works after reconnect.')
+
+  stage = 'completed transfer history remains private without progress events'
+  await page!.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+  const history = files.getByRole('region', { name: 'File transfers', exact: true })
+  await expect(history).toContainText('192.0.2.51')
+  await page!.getByRole('button', { name: 'Stream mode', exact: true }).click()
+  await expect(history).not.toContainText('192.0.2.51')
+  await page!.getByRole('button', { name: 'Stream mode rules', exact: true }).click()
+  const rules = page!.getByRole('dialog', { name: 'Stream mode rules', exact: true })
+  await rules.getByRole('button', { name: 'Add rule', exact: true }).click()
+  await rules.getByLabel('Hidden text 1', { exact: true }).fill('CUSTOMSECRET')
+  await rules.getByRole('button', { name: 'Save rules', exact: true }).click()
+  await expect(history).not.toContainText('CUSTOMSECRET')
+  assert.equal((await history.locator('strong[title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title') || ''))).some((value) => value.includes('192.0.2.51') || value.includes('CUSTOMSECRET')), false)
+  await page!.getByRole('button', { name: 'Stream mode', exact: true }).click()
+  await expect(history).toContainText(path.basename(freshFile))
+
   stage = 'custom bandwidth persistence'
   await limit.selectOption('custom')
   await files.getByRole('spinbutton', { name: 'Custom transfer limit in KiB per second', exact: true }).fill('96')
